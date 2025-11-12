@@ -1,0 +1,7 @@
+.vscode/
+__pycache__/
+
+agent_token.txt
+token.txt
+
+data/Archive/

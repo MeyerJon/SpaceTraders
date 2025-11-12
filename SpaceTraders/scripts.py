@@ -296,6 +296,10 @@ async def manager_system_probes(system):
 
         # Refresh the top N most outdated markets
         tasks = [asyncio.create_task(update_market(*assigment)) for assigment in order_assignment]
+
+        # TODO: instead of awaiting the results for this batch, it would be better to continuously run this loop 
+        # That way, finished probes don't have to wait for the slowest in the batch before getting released
+        # Maybe wrap the loop in an asyncio TaskGroup?
         results = await asyncio.gather(*tasks)
 
         if not all(results):

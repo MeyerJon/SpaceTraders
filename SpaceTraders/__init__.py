@@ -97,8 +97,7 @@ def patch_request(url, data=None, headers=None):
 ### LOGGING / MONITORING ###
 def _log_request(url, response, data=None):
     """ Logs the request into a logging table. """   
-    data = data or dict()
-    row = {'url': url, 'status_code': response, 'request_body': json.dumps(data), 'timestamp': time.time()}
+    row = {'url': url, 'status_code': response, 'request_body': json.dumps(data) if data is not None else None, 'timestamp': time.time()}
     io.write_rows('logs.REQUESTS', row)
 
 

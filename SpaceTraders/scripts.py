@@ -144,24 +144,27 @@ async def buy_from_shipyard(ship, shipyard, target_ship_type):
 async def update_market(ship, waypoint):
     """ Navigates to a waypoint and updates the market & shipyard there. """
 
+    server_refresh_delay = 4 # Market refresh tends to fail if server is queried immediately after ship arrives. This delay is added between navigation & scan
+
     def refresh_market(ship):
         tg_success = F_trade.refresh_tradegoods(ship)
         sy_success = F_trade.refresh_shipyard(ship, verbose=False)
         return tg_success
-        
-    # Sanity check - if ship already at the waypoint, refresh the markets immediately
-    if F_nav.get_ship_waypoint(ship) == waypoint:
-        return refresh_market(ship)
     
     # Lock ship - This is a blocking action
     fleet_res_mgr.set_ship_blocked_status(ship, True)
-
-    # Navigate to the market
-    if not await navigate(ship, waypoint):
-        return False
-    await await_navigation(ship)
+        
+    arrived = (F_nav.get_ship_waypoint(ship) == waypoint)
+    
+    if not arrived:
+        # Navigate to the market
+        if not await navigate(ship, waypoint):
+            fleet_res_mgr.set_ship_blocked_status(ship, False) # Unlock early (on return)
+            return False
+        await await_navigation(ship)
 
     # Refresh market
+    await asyncio.sleep(server_refresh_delay)
     success = refresh_market(ship)
 
     # Unlock ship

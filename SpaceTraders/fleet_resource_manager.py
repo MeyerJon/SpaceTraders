@@ -25,8 +25,15 @@ def get_ship_controller(ship):
     else:
         return None, -1 # No entry in the DB means there is no known control over the ship
 
-def get_available_ships_in_systems(sectors : list, ship_role : str = None, prio = 0):
+def get_available_ships_in_systems(sectors : list, ship_role : str = None, prio = 0, controller : str = None):
     """ Returns list of currently available ships in given sectors. Optionally uses ship type & priority to filter ships that could be released. """
+
+    # Controller must either be NULL or same as the one specified, or have a lower priority than specified
+    condition_ctrl = "locks.controller is NULL "
+    if controller:
+        condition_ctrl += f"or locks.controller = \"{controller}\" "
+    condition_ctrl += f"or locks.priority < {prio}"
+
     q = f"""
         select
             nav.symbol
@@ -40,15 +47,28 @@ def get_available_ships_in_systems(sectors : list, ship_role : str = None, prio 
             on locks.shipSymbol = reg.shipSymbol
 
         where 1=1
-        and (locks.controller is NULL or locks.priority < {prio}) and locks.blocked = 0
+        and ({condition_ctrl}) 
+        and locks.blocked = 0
         """
     if ship_role is not None:
         q += f'\nand reg.role = "{ship_role}"'
+    if controller is not None:
+        q += f'\nor locks.controller = "{controller}"'
     records = io.read_list(q)
     if len(records):
         return [r[0] for r in records]
     else:
         return list()
+
+def get_controller_fleet(controller : str):
+    """ Returns list of ships currently claimed by controller. """
+    q = f"""
+        select
+            distinct shipSymbol
+        from 'control.SHIP_LOCKS' l
+        where controller = "{controller}"
+    """
+    return [r[0] for r in io.read_list(q)]
 
 ### SETTERS ###
 
@@ -94,9 +114,11 @@ def request_ship(ship : str, controller : str, priority : int):
     
     # Check current controller
     cur_ctrl, cur_prio = get_ship_controller(ship)
-    if cur_ctrl is None:
+    if cur_ctrl is None or cur_ctrl == controller:
         # Assign ship
         return lock_ship(ship, controller, priority)
     elif cur_prio < priority:
         # Handover: forcibly release previous control, then set new controller
-        return (release_ship(ship) and lock_ship(ship))
+        return (release_ship(ship) and lock_ship(ship, controller, priority))
+    else:
+        return False

@@ -3,7 +3,7 @@
 
     Functions that enable a controller to automatically use available probes in a system to smartly refresh trade good data in that system.
 """
-import asyncio, random
+import asyncio, random, time
 from SpaceTraders import io, fleet_resource_manager, scripts, F_nav
 
 
@@ -50,7 +50,8 @@ def assign_probe_to_market(candidates : list, fleet : dict, market : str, contro
     if acquired:
         fleet[probe] = {
             "market": market,
-            "task": asyncio.create_task(scripts.update_market(probe, market))
+            "task": asyncio.create_task(scripts.update_market(probe, market)),
+            "time_start": int(time.time())
         }
         return True
     return False
@@ -170,6 +171,13 @@ def get_import_export_markets_by_freshness(system : str, time_delta : int):
     """
     return _query_markets(q_exclude_exchanges)
 
+def get_prioritised_markets(candidates : list):
+    """ Returns the candidates sorted by priority. 
+        Factors in how outdated the data is, as well as how far away the market is from currently available ships.
+    """
+    raise NotImplementedError("To be implemented")
+
+
 ### MAIN ENTRY ###
 
 async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : str = "all"):
@@ -178,8 +186,10 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
             - refresh_freq [int] : Minimum time before a market becomes eligible for scanning again, in seconds
             - mode [str] : ('all', 'no_fuel', 'no_exchanges') Sets a filter for which markets to include/exclude. 
     """
+    # Bookkeeping
     controller_id = BASE_CONTROLLER_ID + "-" + system
     fleet = dict()
+    slowest_completion = -1
     try:
         while True:
             # Check market queue
@@ -204,11 +214,17 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                 print(f"[INFO] {controller_id} scheduled scans for all markets. Standing by.")
                 await asyncio.sleep(refresh_freq)
 
-            # If not cleared but a fleet is working, wait for the first ship to finish its task
+            
             elif not cleared:
                 fleet_tasks = [s["task"] for s in fleet.values() if s.get("task", None) is not None]
-                print(f"[INFO] {controller_id} was unable to clear its queue. Waiting for {len(fleet_tasks)} ships to report back for reassignment.")
-                done, ongoing = await asyncio.wait(fleet_tasks, return_when=asyncio.FIRST_COMPLETED)
+                if len(fleet_tasks) > 0:
+                # If not cleared but a fleet is working, wait for the first ship to finish its task
+                    print(f"[INFO] {controller_id} was unable to clear its queue. Waiting for {len(fleet_tasks)} ships to report back for reassignment.")
+                    done, ongoing = await asyncio.wait(fleet_tasks, return_when=asyncio.FIRST_COMPLETED)
+                else:
+                # If not cleared and no ships were available, wait an arbitrary time before retrying
+                    print(f"[INFO] {controller_id} is waiting to acquire a fleet.")
+                    await asyncio.sleep(2)
 
             # Release finished ships & report
             failures, successes = 0, 0
@@ -222,6 +238,10 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                     failures += 1
                 else:
                     successes += 1
+                    time_taken = time.time() - s['time_start']
+                    if time_taken > slowest_completion:
+                        print(f"[INFO] {controller_id} is reporting a new slowest recon from {p}: {time_taken:.1f} seconds.")
+                        slowest_completion = time_taken
                 
                 # Release the ship only if we're not blocked; else this ship might get reassigned to the blocking market soon
                 fleet_resource_manager.release_ship(p)

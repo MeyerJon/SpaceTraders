@@ -79,9 +79,9 @@ def set_ship_blocked_status(ship : str, blocked : bool):
 
 ### LOCKING FUNCTIONALITY ###
 
-def release_ship(ship : str):
-    """ Sets a ship's status to released, meaning it's ready to be picked up by other controllers. """
-    if get_ship_blocked_status(ship):
+def release_ship(ship : str, force=False):
+    """ Sets a ship's status to released, meaning it's ready to be picked up by other controllers. If force=True, releases even when ship is blocked. """
+    if not force and get_ship_blocked_status(ship):
         print(f"[ERROR] Can't release {ship}: currently blocked.")
         return False
     success = io.write_data('control.SHIP_LOCKS', {"shipSymbol": ship, "controller": None, "priority": -1, "blocked": False}, mode="update", key=["shipSymbol"])
@@ -122,3 +122,11 @@ def request_ship(ship : str, controller : str, priority : int):
         return (release_ship(ship) and lock_ship(ship, controller, priority))
     else:
         return False
+
+def release_fleet(controller : str, force=False):
+    """ Releases all ships owned by the controller. If force=True, also releases locked ships. """
+    success = True
+    for s in get_controller_fleet(controller):
+        success = success and release_ship(s, force)
+
+    return success

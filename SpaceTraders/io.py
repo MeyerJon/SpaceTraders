@@ -37,14 +37,15 @@ def _table_exists(table : str):
 
 def _initiate_table_from_dict(table : str, data : dict):
     """ Creates a table from a dict if it doesn't exist. """
+
     q = f"CREATE TABLE IF NOT EXISTS '{table}' AS\nSELECT\n"
     for k_ix, k in enumerate(data.keys()):
-        q += f'{_quoted_value(data[k])} as {k}'
+        q += f':{k} as {k}'
         if k_ix < len(data)-1: q += ",\n"
 
     try:
         with _DB_CONN() as conn:
-            conn.execute(q)
+            conn.execute(q, data)
     except Exception as e:
         print(f"[ERROR] Exception while initialising table {table}:")
         print(e)

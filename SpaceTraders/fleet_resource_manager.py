@@ -25,7 +25,7 @@ def get_ship_controller(ship):
     else:
         return None, -1 # No entry in the DB means there is no known control over the ship
 
-def get_available_ships_in_systems(sectors : list, ship_role : str = None, prio = 0, controller : str = None):
+def get_available_ships_in_systems(systems : list, ship_role : str = None, prio = 0, controller : str = None):
     """ Returns list of currently available ships in given sectors. Optionally uses ship type & priority to filter ships that could be released. """
 
     # Controller must either be NULL or same as the one specified, or have a lower priority than specified
@@ -41,7 +41,7 @@ def get_available_ships_in_systems(sectors : list, ship_role : str = None, prio 
 
         inner join 'ship.NAV' nav
             on locks.shipSymbol = nav.symbol
-            and nav.systemSymbol in ({', '.join([f'"{s}"' for s in sectors])})
+            and nav.systemSymbol in ({', '.join([f'"{s}"' for s in systems])})
 
         inner join 'ship.REGISTRATION' reg
             on locks.shipSymbol = reg.shipSymbol
@@ -52,8 +52,7 @@ def get_available_ships_in_systems(sectors : list, ship_role : str = None, prio 
         """
     if ship_role is not None:
         q += f'\nand reg.role = "{ship_role}"'
-    if controller is not None:
-        q += f'\nor locks.controller = "{controller}"'
+
     records = io.read_list(q)
     if len(records):
         return [r[0] for r in records]

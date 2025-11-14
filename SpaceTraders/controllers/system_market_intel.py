@@ -12,25 +12,6 @@ BASE_PRIO_MGR_PROBES = 100
 BASE_CONTROLLER_ID = "PROBE-MANAGER"
 
 
-### TEMP ###
-async def _dummy_update_market(ship, market):
-    fleet_resource_manager.set_ship_blocked_status(ship, True)
-    print(f"{ship} is en-route to {market}.")
-    if random.random() < 0.7:
-        # Faster task
-        await asyncio.sleep(0.1 + (random.randint(10, 100) / 100.0))
-    else:
-        # Slower task
-        await asyncio.sleep(1 + (random.randint(200, 400) / 100.0))
-    success = random.random() < 0.85
-    if success:
-        print(f"{ship} refreshed market at {market}.")
-    else:
-        print(f"{ship} failed to refresh market at {market}.")
-    fleet_resource_manager.set_ship_blocked_status(ship, False)
-    return success    
-
-
 ### HELPERS ###
 def get_finished_ships(fleet):
     """ Returns a list of ship names that have finished their tasks. """
@@ -115,7 +96,7 @@ async def dispatch_satellites(system : str, market_order : list, fleet : dict, c
 def _query_markets(q : str):
     return [r[0] for r in io.read_list(q)]
 
-def get_all_markets_by_freshness(system : str):
+def get_all_markets_by_freshness(system : str, **kwargs):
     """ Returns list of all markets in system, sorted by ascending tradegood data freshness. """
     q_all_markets = f"""
         with market_update_times as (
@@ -144,7 +125,7 @@ def get_all_markets_by_freshness(system : str):
         """
     return _query_markets(q_all_markets)
 
-def get_non_fuel_markets_by_freshness(system : str, time_delta : int):
+def get_non_fuel_markets_by_freshness(system : str, time_delta : int, **kwargs):
     """ Returns list of all markets that sell more than just fuel and are outdated by more than time_delta seconds, ordered by ascending data freshness."""
     q_exclude_fuel_only = f"""
         select
@@ -157,7 +138,7 @@ def get_non_fuel_markets_by_freshness(system : str, time_delta : int):
     """
     return _query_markets(q_exclude_fuel_only)
 
-def get_import_export_markets_by_freshness(system : str, time_delta : int):
+def get_import_export_markets_by_freshness(system : str, time_delta : int, **kwargs):
     """ Returns list of all markets that both import and export goods and are outdated by more than time_delta seconds, ordered by ascending data freshness. """
     q_exclude_exchanges = f"""
         select
@@ -171,11 +152,55 @@ def get_import_export_markets_by_freshness(system : str, time_delta : int):
     """
     return _query_markets(q_exclude_exchanges)
 
-def get_prioritised_markets(candidates : list):
-    """ Returns the candidates sorted by priority. 
+def get_prioritised_markets(market_selector, **kwargs) -> list[str]:
+    """ Returns the candidates selected by market_selector function, sorted by priority. 
         Factors in how outdated the data is, as well as how far away the market is from currently available ships.
+        Slightly prefers closer markets to improve refresh throughput.
     """
-    raise NotImplementedError("To be implemented")
+    candidates      = market_selector(**kwargs)
+    available_ships = fleet_resource_manager.get_available_ships_in_systems([kwargs["system"]], ship_role="SATELLITE", prio=kwargs.get("priority", BASE_PRIO_MGR_PROBES), controller=kwargs.get("controller", None))
+    q_prio_markets = f"""
+                with market_update_times as (
+                    select
+                        distinct marketSymbol,
+                        ts_created,
+                        strftime('%s', 'now') - ts_created as time_since_update,
+                        datetime(ts_created, 'unixepoch', 'localtime') as last_update
+                    from tradegoods_current
+                    group by marketSymbol
+                    having marketSymbol in ({", ".join([f'"{market}"' for market in candidates])})
+                ),
+                
+                scored_markets as (
+                    select
+                        distinct next_mkt.marketSymbol
+                        -- Score weighs 'outdatedness' and distance almost equally, but prefers closer waypoints, and much prefers current waypoint
+                        ,(
+                        wp_dists.dist 
+                        + (wp_dists.dist * ((select max(time_since_update) from market_update_times) - time_since_update)) 
+                        + iif(nav.waypointSymbol = next_mkt.marketSymbol, -1, 0)
+                        ) as score
+
+                    -- Start from all waypoint distances
+                    from WP_DISTANCES wp_dists
+
+                    -- Add current locations of ships
+                    inner join 'ship.NAV' nav
+                    on nav.waypointSymbol = wp_dists.src
+                    and nav.symbol in ({", ".join([f'"{ship}"' for ship in available_ships])})
+
+                    -- Add market locations & update times 
+                    inner join market_update_times next_mkt
+                    on wp_dists.dst = next_mkt.marketSymbol
+                )
+
+                select
+                    distinct marketSymbol, min(score)
+                from scored_markets
+                group by marketSymbol
+                order by score asc
+    """
+    return [r[0] for r in io.read_list(q_prio_markets)]
 
 
 ### MAIN ENTRY ###
@@ -186,6 +211,16 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
             - refresh_freq [int] : Minimum time before a market becomes eligible for scanning again, in seconds
             - mode [str] : ('all', 'no_fuel', 'no_exchanges') Sets a filter for which markets to include/exclude. 
     """
+    # Preconditions
+    modes = ["all", "no_fuel", "no_exchanges"]
+    selector_func = None
+    if mode not in modes:
+        print(f"[ERROR] Incorrect mode passed to {controller_id}: {mode}. Deferring control.")
+        return False
+    else:
+        funcs = [get_all_markets_by_freshness, get_non_fuel_markets_by_freshness, get_import_export_markets_by_freshness]
+        selector_func = funcs[modes.index(mode)]
+
     # Bookkeeping
     controller_id = BASE_CONTROLLER_ID + "-" + system
     fleet = dict()
@@ -193,16 +228,11 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
     try:
         while True:
             # Check market queue
-            market_queue = list()
-            if mode == "all":
-                market_queue = get_all_markets_by_freshness(system)
-            elif mode == "no_fuel":
-                market_queue = get_non_fuel_markets_by_freshness(system, refresh_freq)
-            elif mode == "no_exchanges":
-                market_queue = get_import_export_markets_by_freshness(system, refresh_freq)
-            else:
-                print(f"[ERROR] Incorrect mode passed to {controller_id}: {mode}. Deferring control.")
-                return False
+            market_queue = get_prioritised_markets(market_selector=selector_func, 
+                                                   system=system, 
+                                                   priority=BASE_PRIO_MGR_PROBES, 
+                                                   controller=controller_id, 
+                                                   time_delta = refresh_freq)
 
             print(f"[INFO] {controller_id} is targeting {len(market_queue)} markets.")
     
@@ -213,7 +243,6 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
             if cleared and refresh_freq > 0:
                 print(f"[INFO] {controller_id} scheduled scans for all markets. Standing by.")
                 await asyncio.sleep(refresh_freq)
-
             
             elif not cleared:
                 fleet_tasks = [s["task"] for s in fleet.values() if s.get("task", None) is not None]

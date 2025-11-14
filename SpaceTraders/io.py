@@ -82,7 +82,9 @@ def write_rows(table : str, data : list, mode='append', key : list = None):
                 query += ";"
                 conn.executemany(query, data)
             
-            query = f"INSERT INTO '{table}' VALUES ({', '.join([f':{k}' for k in data[0].keys()])})"
+            query = f"INSERT INTO '{table}' "
+            query += f"({', '.join([f'{k}' for k in data[0].keys()])}) "
+            query += f"VALUES ({', '.join([f':{k}' for k in data[0].keys()])})"
             conn.executemany(query, data)
             conn.commit()
 

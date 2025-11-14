@@ -32,22 +32,6 @@ async def navigate(ship, destination_wp):
     if (destination_wp == cur_nav['waypointSymbol']) and (not cur_nav['status'] == 'IN_TRANSIT'):
         return True
 
-    # TODO: implement actual multi-hop pathfinding that accounts for fuel capacity
-    path = list()
-    """
-    fuel_wps = F_nav._get_known_fuel_stops(cur_nav['systemSymbol'])
-    cur_ship_info = ST.get_ship_info(ship)
-    fuelcap = cur_ship_info['frame']['fuelCapacity'] # This is 0 for probes?
-    fuelreq = F_nav.get_fuel_required(cur_nav['waypointSymbol'], destination_wp)
-    if fuelcap > 0 and (fuelreq > fuelcap-2):
-        print(f"[ERROR] {ship} cannot find a path to {destination_wp}. Aborting navigation.")
-        return False
-    flightmode = 'CRUISE'
-    fuelreq_burn = (fuelreq*2) + 1
-    if fuelcap > 0 and (fuelreq_burn < fuelcap) and destination_wp in fuel_wps:
-        # Ship could safely burn to destination
-        flightmode = 'BURN'
-    """
     path = F_nav.get_path(ship, cur_nav['waypointSymbol'], destination_wp)
     #path = [(destination_wp, flightmode)]
     for wp, flmode, dist in path: 
@@ -99,6 +83,13 @@ async def sell_to_market(ship : str, market : str, goods : dict):
 
     return True
 
+async def offload_to_market(ship : str, market : str):
+    """ Orders ship to try selling its entire cargo hold at a market. Will return True if everything was sold. Does not check budgets. """
+    to_offload = dict()
+    for i in F_trade.get_ship_cargo(ship).get('inventory', list()):
+        to_offload[i["symbol"]] = i["units"]
+    return await sell_to_market(ship, market, to_offload)
+
 async def buy_from_market(ship : str, market : str, goods : dict):
     """ Navigates to given market and purchases the specified cargo there. """
 
@@ -147,6 +138,8 @@ async def update_market(ship, waypoint):
     server_refresh_delay = 4 # Market refresh tends to fail if server is queried immediately after ship arrives. This delay is added between navigation & scan
 
     def refresh_market(ship):
+        if not F_nav.dock_ship(ship):
+            return False
         tg_success = F_trade.refresh_tradegoods(ship)
         sy_success = F_trade.refresh_shipyard(ship, verbose=False)
         return tg_success
@@ -171,6 +164,45 @@ async def update_market(ship, waypoint):
     fleet_res_mgr.set_ship_blocked_status(ship, False)
 
     return success
+
+async def fetch_cargo_from_ship(sink_ship, source_ship, good, units=None):
+    """ Sends sink_ship to go and fetch given good from source_ship. If units not specified, takes all units. """
+    # Go to location
+    if not await navigate(sink_ship, F_nav.get_ship_waypoint(source_ship)):
+        print(f"[ERROR] {sink_ship} could not fetch cargo from {source_ship} : target ship unreachable.")
+        return False
+    await await_navigation(sink_ship)
+
+    # Ensure identical status
+    src_nav = F_nav.get_ship_nav(source_ship)
+    if src_nav["status"] == "DOCKED":
+        F_nav.dock_ship(sink_ship)
+    
+    to_transfer = units
+    if to_transfer is None:
+        src_cargo = F_trade.get_ship_cargo(source_ship)
+        for i in src_cargo["inventory"]:
+            if i["symbol"] == good:
+                to_transfer = i["units"]
+
+    success = F_trade.transfer_cargo(source_ship, sink_ship, good, to_transfer)
+    if not success:
+        print(f"[ERROR] {sink_ship} failed to fetch {units} {good} from {source_ship}.")
+    else:
+        print(f"[INFO] {sink_ship} fetched {to_transfer} {good} from {source_ship}.")
+
+    return success
+
+async def drain_cargo_from_ship(sink_ship, source_ship):
+    """ Sends sink_ship to go fetch all cargo from source_ship. """
+    # TODO: Implement checks for cargo
+    target_goods = list()
+    success = True
+    for i in F_trade.get_ship_cargo(source_ship).get('inventory', list()):
+        #target_goods.append({"good": i["symbol"], "units": i["units"]})
+        success = success and await fetch_cargo_from_ship(sink_ship, source_ship, i["symbol"], i["units"])
+    return success
+
 
 # Market recon loop
 async def market_update_loop(ship, path=None, loops=-1):
@@ -243,80 +275,6 @@ async def market_update_loop(ship, path=None, loops=-1):
             print(e)
 
         time.sleep(interval_seconds)
-
-async def manager_system_probes(system):
-    """ Claims probes in system to continuously update markets. """
-    
-    CONTROLLER_ID = "PROBE-MANAGER-" + system
-    BASE_PRIO_MGR_PROBES = 100
-    REFRESH_PERIOD = 2 # Seconds between loops
-    
-    while True:
-        # Check which markets need updating most urgently
-        q = """
-            with market_update_times as (
-            select
-                marketSymbol,
-                min(ts_created) as ts_last_update,
-                datetime(min(ts_created), 'unixepoch', 'localtime') as last_update
-            from tradegoods_current
-            group by marketSymbol
-            )
-
-            select
-                distinct wp.symbol
-            from 'nav.WAYPOINTS' wp
-
-            inner join 'nav.TRAITS' t
-            on wp.symbol = t.waypointSymbol
-            and t.symbol = "MARKETPLACE"
-
-            left join market_update_times mu
-            on mu.marketSymbol = wp.symbol
-
-            order by mu.ts_last_update asc
-            """
-        market_order = [r[0] for r in io.read_list(q)]
-
-        # Check all available probes
-        probes = fleet_res_mgr.get_available_ships_in_systems([system], ship_role="SATELLITE", prio=BASE_PRIO_MGR_PROBES)
-        if len(probes) == 0:
-            print(f"[INFO] {CONTROLLER_ID} found no available ships.")
-
-        # Request every available ship
-        acquired = list()
-        for p in probes:
-            if fleet_res_mgr.request_ship(p, CONTROLLER_ID, BASE_PRIO_MGR_PROBES):
-                acquired.append(p)
-
-        if len(acquired) == 0:
-            print(f"[INFO] {CONTROLLER_ID} was unable to acquire any probes.")
-
-        # Assign each ship to a market (preferably by current distance)
-        # TODO make this smarter
-        # This should prioritise markets that are actually useful, i.e. that have IMPORTS and EXPORTS. Others should still get refreshed, but less frequently is fine.
-        order_assignment = [(acquired[i], market_order[i]) for i in range(len(acquired))]
-
-        # Refresh the top N most outdated markets
-        tasks = [asyncio.create_task(update_market(*assigment)) for assigment in order_assignment]
-
-        # TODO: instead of awaiting the results for this batch, it would be better to continuously run this loop 
-        # That way, finished probes don't have to wait for the slowest in the batch before getting released
-        # Maybe wrap the loop in an asyncio TaskGroup?
-        results = await asyncio.gather(*tasks)
-
-        if not all(results):
-            print(f"[WARNING] {CONTROLLER_ID} failed to refresh {len(results) - sum(results)} markets.")
-
-        # Release acquired probes
-        for p in acquired:
-            fleet_res_mgr.release_ship(p)
-
-        print(f"[INFO] {CONTROLLER_ID} refreshed {sum(results)} markets.")
-
-        # Wait for next refresh
-        await asyncio.sleep(REFRESH_PERIOD)
-
 
 # Shipyard recon loop
 def scan_shipyards(ship):

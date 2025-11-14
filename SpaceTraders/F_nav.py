@@ -448,6 +448,22 @@ def _refresh_ship_registration(ship : str, reg : dict = None):
     
     return io.write_data('ship.REGISTRATION', {'shipSymbol': ship, **reg}, mode="update", key=["shipSymbol"])
 
+def _refresh_ship_mounts(ship : str, mounts : list = None):
+    """ Updates the installed mount data for a ship. If 'mounts' is passed a list of Mounts object, uses that to update instead of the API. """
+    if mounts is None:
+        r = ST.get_request(f'/my/ships/{ship}')
+        if not r.status_code == 200:
+            print(f"[ERROR] Failed to refresh mounts for {ship} : could not fetch ship info.")
+            return False
+        mounts = r.json()['data']['mounts']
+
+    success = False
+    for m in mounts:
+        enriched = {"shipSymbol": ship, "symbol": m["symbol"], "strength": m.get("strength", None), 
+                 "power": m["requirements"].get("power", None), "crew": m["requirements"].get("crew", None), "slots": m["requirements"].get("slots", None)}
+        success = io.write_data('ship.MOUNTS', enriched, mode="update", key=["shipSymbol", "symbol"])
+    return success
+
 def _refresh_waypoints(system):
     """ Refresh the cache for the details of all waypoints in a system.
         Writes to

@@ -20,11 +20,23 @@ def _log_trade(market_transaction : dict):
 
 ### GETTERS ###
 def get_ship_cargo(ship):
-    cargo_r = ST.get_request(f'/my/ships/{ship}/cargo')
-    if cargo_r.status_code != 200:
-        print(f'[ERROR] Failed to get cargo for ship {ship}.')
-        print(f' [INFO]', cargo_r.json())
-    return cargo_r.json()['data']    
+    # TODO: Deal with cache misses better
+    base = io.read_dict(f"SELECT capacity, totalUnits as units FROM 'ship.CARGO' group by shipSymbol having shipSymbol = \"{ship}\"")
+    if not base:
+        # Cache miss - Ship not in DB
+        _refresh_cargo(ship)
+    elif base[0]["units"] > base[0]["capacity"]:
+        # Cache miss - Inconsistent cache
+        _refresh_cargo(ship)
+
+    base = io.read_dict(f"SELECT capacity, totalUnits as units FROM 'ship.CARGO' group by shipSymbol having shipSymbol = \"{ship}\"")
+    if len(base) == 0:
+        print(f"[ERROR] Failed to fetch cargo info for {ship}.")
+        return False
+    
+    inv = io.read_dict(f"SELECT symbol, name, description, units FROM 'ship.CARGO' where shipSymbol = \"{ship}\" and symbol <> \"DUMMY\"")
+
+    return {**base[0], "inventory": inv}
 
 def get_shipyard_info(waypoint, verbose=True):
     """ Returns shipyard info from given waypoint if available. """
@@ -112,6 +124,31 @@ def get_total_profit_from_trade(ship, source_market, sink_market, ts_start):
 
 ### ACTIONS ###
 
+def transfer_cargo(src_ship, sink_ship, good, units, verbose=True):
+    """ Transfers units of goods from src_ship to sink_ship. Returns success boolean. Updates DB with cargo of both ships. """
+    # Check if ships are in the same place
+    src_nav  = F_nav.get_ship_nav(src_ship)
+    sink_nav = F_nav.get_ship_nav(sink_ship)
+    if src_nav['waypointSymbol'] != sink_nav['waypointSymbol']:
+        if verbose: print(f"[ERROR] {src_ship} can't transfer to {sink_ship} : not in the same location.")
+        return False
+    elif src_nav['status'] != sink_nav['status']:
+        if verbose: print(f"[ERROR] {src_ship} can't transfer to {sink_ship} : ships don't have the same status (both must ORBIT or be DOCKED).")
+        return False
+    
+    r = ST.post_request(f'/my/ships/{src_ship}/transfer', data={"tradeSymbol": good, "units": units, "shipSymbol": sink_ship})
+    if not r.status_code == 200:
+        if verbose:
+            print(f"[ERROR] {src_ship} failed to transfer {units} {good} to {sink_ship}:")
+            print("      ", r.json())
+        return False
+    
+    # Update cargo of both ships
+    _add_cargo(src_ship, {"symbol": good, "units": -units})
+    _add_cargo(sink_ship, {"symbol": good, "units": units})
+
+    return True
+
 def sell_cargo(ship, good, units, verbose=True):
     """ Sells the specified volume of a good. 
         Returns status [boolean] - True if sale successfully executed.
@@ -126,9 +163,14 @@ def sell_cargo(ship, good, units, verbose=True):
         print(f"[ERROR] Ship {ship} failed to sell ({units}) {good}.")
         print(f' [INFO]', r.json())
         return False
+    # Update cargo in DB
+    data = r.json()['data']
+    _add_cargo(ship, {"symbol": good, "units": -units})
+
     # Log sale
-    t = r.json()['data']['transaction']
+    t = data['transaction']
     _log_trade(t)
+
     if verbose:
         print(f"[INFO] Ship {ship} sold {t['units']} {good} @ {t['pricePerUnit']} for a total of {t['totalPrice']} credits.")
     
@@ -187,8 +229,12 @@ def _purchase_cargo(ship, good, units, verbose=True):
         print(f" [INFO]", r.json())
         return False
     
+    # Update cargo in DB
+    data = r.json()['data']
+    _add_cargo(ship, {"symbol": good, "units": units})
+
     # Log sale
-    t = r.json()['data']['transaction']
+    t = data['transaction']
     _log_trade(t)
 
     if verbose:
@@ -349,3 +395,58 @@ def refresh_shipyard(ship, verbose=True):
     write_ships   = io.write_data('shipyard.SHIPS', ships_df)
     write_modules = io.write_data('shipyard.MODULES', modules_df)
     return (write_ships and write_modules)
+
+
+### PERSISTENCE ###
+def _refresh_cargo(ship : str, cargo : dict = None):
+    """ Updates the cargo for a ship. If 'cargo' is passed a Cargo object, uses that to update instead of the API. """
+    if cargo is None:
+        r = ST.get_request(f'/my/ships/{ship}/cargo')
+        if not r.status_code == 200:
+            print(f"[ERROR] Failed to cargo for {ship} : could not fetch ship info.")
+            return False
+        cargo = r.json()['data']
+
+    # Remove the entire old cache since we're completely overwriting it
+    io.update_records_custom(f"DELETE FROM 'ship.CARGO' WHERE shipSymbol = \"{ship}\"")
+
+    # Write the base as a separate line so there's always something showing up for the ships cargo & we can always query total capacity this way
+    base = {"shipSymbol": ship, "capacity": cargo["capacity"], "totalUnits": cargo["units"], "ts_created": int(time.time())}
+    success = io.write_data('ship.CARGO', {**base, "symbol": "DUMMY", "name": None, "description": None, "units": 0}, mode="update", key=["shipSymbol", "symbol"])
+    for i in cargo["inventory"]:
+        enriched = {**base, **i}
+        success = success and io.write_data('ship.CARGO', enriched, mode="update", key=["shipSymbol", "symbol"])
+    return success
+
+def _add_cargo(ship : str, cargo : dict):
+    """ Adds given goods/cargo to the ship's tracked inventory (positive or negative units can be passed for the mutation). 
+        If the ship has none of that good left, the record is deleted from the DB. Does not take any actions; just updates the database. """
+    cur_cargo = get_ship_cargo(ship)
+    to_write = dict()
+    new_units = cargo['units']
+    new_total = cargo["units"] + cur_cargo["units"]
+    good_info = dict()
+    for i in cur_cargo['inventory']:
+        if i['symbol'] == cargo['symbol']:
+            # Determine leftover units (both total & for this good)
+            new_units += i['units']
+            good_info = i
+            break
+    
+    # Write updated record
+    to_write = {"shipSymbol": ship, "capacity": cur_cargo["capacity"], "totalUnits": new_total, "ts_created": int(time.time()),
+                "symbol": cargo['symbol'], "name": good_info.get("name", None), "description": good_info.get("description", None), "units": new_units
+            }
+    success = False
+    if new_total >= 0 and new_units >= 0:
+    # Sanity check - if this update somehow lands us in the negative, something earlier has gone wrong and we abort this write
+        success = io.write_data('ship.CARGO', to_write, mode="update", key=["shipSymbol", "symbol"])
+
+        # Update the counts of totalUnits for the ship
+        if new_total is not None:
+            io.update_records_custom(f"UPDATE 'ship.CARGO' SET totalUnits = {new_total} WHERE shipSymbol = \"{ship}\"")
+
+    # Remove records where symbol (tradeSymbol) is not NULL but there are 0 units
+    io.update_records_custom("DELETE FROM 'ship.CARGO' WHERE units < 1 and symbol <> \"DUMMY\"")
+
+    return success

@@ -224,14 +224,15 @@ def get_path(ship, src, dst):
 
     cur_nav   = get_ship_nav(ship)
     cur_node  = src
-    nodes = [cur_node, dst] + _get_known_fuel_stops(cur_nav['systemSymbol'])
+    fuel_nodes = _get_known_fuel_stops(cur_nav['systemSymbol'])
+    nodes = [cur_node, dst] + fuel_nodes
     nodes = list(set(nodes))
     path = list()
     while True:
         # If a direct path is possible, just use that. This is a separate case because some waypoints have the same location (planet & its moons), which can mess with the distance-ordering below otherwise
         dst_dist = wp_distance(cur_node, dst)
         if dst_dist < fuelcap:
-            flightmode = "BURN" if dst_dist < burncap else "CRUISE"
+            flightmode = "BURN" if ((dst_dist < burncap) and dst in fuel_nodes) else "CRUISE" # Don't burn to places you can't refuel
             path.append((dst, flightmode, dst_dist))
             break
 
@@ -461,7 +462,7 @@ def _refresh_ship_mounts(ship : str, mounts : list = None):
     for m in mounts:
         enriched = {"shipSymbol": ship, "symbol": m["symbol"], "strength": m.get("strength", None), 
                  "power": m["requirements"].get("power", None), "crew": m["requirements"].get("crew", None), "slots": m["requirements"].get("slots", None)}
-        success = io.write_data('ship.MOUNTS', enriched, mode="update", key=["shipSymbol", "symbol"])
+        success = success and io.write_data('ship.MOUNTS', enriched, mode="update", key=["shipSymbol", "symbol"])
     return success
 
 def _refresh_waypoints(system):

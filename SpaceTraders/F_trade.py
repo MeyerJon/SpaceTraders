@@ -240,6 +240,7 @@ def buy_ship(ship : str, shipyard : str, ship_type : str, verbose = True):
     new_ship = resp_data['ship']['symbol']
     F_nav._refresh_ship_nav(new_ship, resp_data['ship']['nav'])
     F_nav._refresh_ship_registration(new_ship, resp_data['ship']['registration'])
+    F_nav._refresh_ship_mounts(new_ship, resp_data['ship']['mounts'])
     return True
 
 ### SETTERS ###

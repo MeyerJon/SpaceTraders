@@ -182,8 +182,8 @@ def write_data(table : str, data, **kwargs):
 
 def update_records_custom(query : str):
     """ Executes a custom update query. Returns True if successfully executed. """
-    if not query.startswith('UPDATE'):
-        print("[ERROR] Failed to update table; not a valid UPDATE statement:\n", query)
+    if not (query.startswith('UPDATE') or query.startswith('DELETE')):
+        print("[ERROR] Failed to update table; not a valid UPDATE/DELETE statement:\n", query)
         return False
     
     with _DB_CONN() as conn:

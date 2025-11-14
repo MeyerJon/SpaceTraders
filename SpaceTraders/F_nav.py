@@ -437,6 +437,17 @@ def _refresh_ship_nav(ship : str, nav : dict = None):
 
     return True
 
+def _refresh_ship_registration(ship : str, reg : dict = None):
+    """ Updates the registration data for a ship. If 'reg' is passed a Registration object, uses that to update instead of the API. """
+    if reg is None:
+        r = ST.get_request(f'/my/ships/{ship}')
+        if not r.status_code == 200:
+            print(f"[ERROR] Failed to refresh registration for {ship} : could not fetch ship info.")
+            return False
+        reg = r.json()['data']['registration']
+    
+    return io.write_data('ship.REGISTRATION', {'shipSymbol': ship, **reg}, mode="update", key=["shipSymbol"])
+
 def _refresh_waypoints(system):
     """ Refresh the cache for the details of all waypoints in a system.
         Writes to

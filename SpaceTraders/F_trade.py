@@ -224,6 +224,9 @@ def buy_goods(ship : str, goods : dict, verbose = True):
 
 def buy_ship(ship : str, shipyard : str, ship_type : str, verbose = True):
     """ Purchases a ship at given shipyard using given ship. Fails if no shipyard available. """
+    if not F_nav.dock_ship(ship):
+        return False
+    
     r = ST.post_request(f'/my/ships', {"shipType": ship_type, "waypointSymbol": shipyard})
     if not r.status_code == 201:
         if verbose:
@@ -234,6 +237,9 @@ def buy_ship(ship : str, shipyard : str, ship_type : str, verbose = True):
     if verbose:
         print(f"[INFO] {ship} bought a new {ship_type} for {resp_data['transaction']['price']} credits (at {shipyard})")
     # TODO: Update the cache with this new ship's info: ship.NAV, ship.REGISTRATION; releasing ship lock should probably be delegated to the controller that's issueing the buy order
+    new_ship = resp_data['ship']['symbol']
+    F_nav._refresh_ship_nav(new_ship, resp_data['ship']['nav'])
+    F_nav._refresh_ship_registration(new_ship, resp_data['ship']['registration'])
     return True
 
 ### SETTERS ###

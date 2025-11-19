@@ -214,9 +214,9 @@ def get_path(ship, src, dst):
     
     # Probes / Satellites have to drift everywhere, but other ships should give a warning if they have no fuel capacity
     if fuelcap < 1:
-        # Satellites have to drift, so just hop directly
+        # Satellites don't have fuel, so just hop directly
         if ST.get_ship_info(ship)['registration']['role'] == 'SATELLITE':
-            return [(dst, "DRIFT", wp_distance(src, dst))]
+            return [(dst, "BURN", wp_distance(src, dst))]
         else:
             # Otherwise, something strange is afoot and pathing should fail
             print(f"[ERROR] {ship} failed to find a path to {dst}: fuel capacity too low ({fuelcap}).")
@@ -458,11 +458,11 @@ def _refresh_ship_mounts(ship : str, mounts : list = None):
             return False
         mounts = r.json()['data']['mounts']
 
-    success = False
+    success = True
     for m in mounts:
         enriched = {"shipSymbol": ship, "symbol": m["symbol"], "strength": m.get("strength", None), 
                  "power": m["requirements"].get("power", None), "crew": m["requirements"].get("crew", None), "slots": m["requirements"].get("slots", None)}
-        success = success and io.write_data('ship.MOUNTS', enriched, mode="update", key=["shipSymbol", "symbol"])
+        success = io.write_data('ship.MOUNTS', enriched, mode="update", key=["shipSymbol", "symbol"]) and success
     return success
 
 def _refresh_waypoints(system):
@@ -535,14 +535,16 @@ def _refresh_ships(ships=None):
         ships = r.json()['data']
 
     data_registration   = list()
-    for s in r:
+    for s in ships:
 
         # Update ship registration
         df_registration = s['registration']
         df_registration["shipSymbol"] = s['symbol']
         data_registration.append(df_registration)
 
-        # Update ship nav
+        # Update other models
         _refresh_ship_nav(s["symbol"], s['nav'])
+        _refresh_ship_registration(s["symbol"], s["registration"])
+        _refresh_ship_mounts(s["symbol"], s["mounts"])
 
     io.write_data("ship.REGISTRATION", data_registration, mode="update", key=["shipSymbol"])

@@ -51,7 +51,6 @@ async def mine_goods(ship: str, waypoint : str, goods : list = None):
 
         if F_extract.siphon(ship):
             # Check if the good is desired; if not, jettison it immediately.
-            # TODO: make this work with the cached cargo data (which is written on extraction)
             """
             if goods is not None:
                 e_yield = data['extraction']['yield']
@@ -67,12 +66,12 @@ async def mine_goods(ship: str, waypoint : str, goods : list = None):
             else:
             # Otherwise, sleep until next extraction
                 cd = F_utils.get_ship_cooldown(ship)['remainingSeconds']
-                print(f"[INFO] {ship} cooling down for {cd} seconds.")
-                await asyncio.sleep(cd)
+                #print(f"[INFO] {ship} cooling down for {cd} seconds.")
+                await asyncio.sleep(cd+0.15)
         else:
         # Extraction failed for some reason; idle for a while and then try again
             cd = max(F_utils.get_ship_cooldown(ship)['remainingSeconds'], refresh_period)
-            print(f'[WARNING] Ship {ship} failed to siphon. Retrying in {cd} seconds.')
+            #print(f'[WARNING] Ship {ship} failed to siphon. Retrying in {cd} seconds.')
             await asyncio.sleep(cd)
             
 ### MAIN ENTRY ###

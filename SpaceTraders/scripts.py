@@ -195,14 +195,46 @@ async def fetch_cargo_from_ship(sink_ship, source_ship, good, units=None):
 
 async def drain_cargo_from_ship(sink_ship, source_ship):
     """ Sends sink_ship to go fetch all cargo from source_ship. """
-    # TODO: Implement checks for cargo
-    target_goods = list()
+    # TODO: Implement checks for cargo capacity
     success = True
     for i in F_trade.get_ship_cargo(source_ship).get('inventory', list()):
-        #target_goods.append({"good": i["symbol"], "units": i["units"]})
-        success = success and await fetch_cargo_from_ship(sink_ship, source_ship, i["symbol"], i["units"])
+        cur_cargo = F_trade.get_ship_cargo(sink_ship)
+        to_take = min(i["units"], cur_cargo["capacity"] - cur_cargo["units"])
+        success = await fetch_cargo_from_ship(sink_ship, source_ship, i["symbol"], to_take) and success
     return success
 
+async def clear_cargo(ship):
+    """ Tries to rid the ship of its cargo. Will prefer selling goods at the best price, but may jettison. """
+    best_prices_q = f"""
+        -- for each item in the inventory, find the max sellPrice in the system (C44 - 6824)
+        select 
+            inv.symbol,
+            tg.marketSymbol,
+            inv.units
+        from 'ship.CARGO' inv
+
+        inner join TRADEGOODS_CURRENT tg
+        on inv.symbol = tg.symbol
+        and inv.shipSymbol = "{ship}"
+
+        group by inv.symbol
+    """
+    trades = io.read_dict(best_prices_q)
+
+    # Go sell off each item that can be sold
+    for t in trades:
+        if not await sell_to_market(ship, t["marketSymbol"], {t["symbol"]: t["units"]}):
+            print(f"[INFO] {ship} failed to sell off {t['symbol']}.")
+    
+    # Jettison any leftover cargo
+    cargo = F_trade.get_ship_cargo(ship)
+    for i in cargo["inventory"]:
+        ST.post_request('/my/ships/{ship}/jettison', data={'symbol': i['symbol'], 'units': i['units']})
+        await asyncio.sleep(0.2)
+
+    F_trade._refresh_cargo(ship) # TODO: Wrap the jettison function so we can track inventory over jettisons and don't need to refresh cargo from API
+
+    return None
 
 # Market recon loop
 async def market_update_loop(ship, path=None, loops=-1):
@@ -345,11 +377,11 @@ async def execute_trade(ship : str, source_market : str, sink_market : str, good
 
     return True
 
-async def naive_trader(ship):
+async def naive_trader(ship, run_interval = None):
     """ Picks a 'sustainable' trade route and initiates it. Backs off by default to allow for markets to stabilise. """
     CONTROLLER_ID = "NAIVE-TRADER-" + ship
     loops            = 0
-    interval_seconds = 60 * 5
+    interval_seconds = run_interval or (60 * 5)
     selection_query  = \
                         """
                         select
@@ -359,7 +391,7 @@ async def naive_trader(ship):
                             and margin > 10
                             and source_volume >= 6 and sink_volume >= 6
                             and distance < 250
-                            and src_supply in ("ABUNDANT", "HIGH")
+                            and src_supply in ("ABUNDANT", "HIGH", "MODERATE")
                             and sink_supply in ("SCARCE", "LIMITED")
                             and symbol not in ("FAB_MATS", "ADVANCED_CIRCUITRY", "QUANTUM_STABILIZERS")
                             order by margin desc
@@ -372,8 +404,8 @@ async def naive_trader(ship):
         ship_cargo = F_trade.get_ship_cargo(ship)
         cargo_held = ship_cargo['units']
         if cargo_held > 0:
-            print(f"[ERROR] {ship} is trying to trade with a non-empty hold. Standing by for intervention.")
-            return False
+            print(f"[INFO] {ship} is trying to trade with a non-empty hold. Clearing cargo first.")
+            await clear_cargo(ship)
         # Sanity check - ensure that the ship isn't in transit
         await await_navigation(ship)
 
@@ -404,7 +436,7 @@ async def naive_trader(ship):
 async def boost_good_growth(ship, system, goods):
     """ Tries growing market volumes for given goods, in given system. """
     loops            = 0
-    interval_seconds = 60 * 2
+    interval_seconds = 30
     selection_query  = \
                         f"""
                         select
@@ -518,6 +550,68 @@ async def mine_loop(ship, source, market, resources):
             return False
 
         await asyncio.sleep(10) # Small backoff between loops
+
+def find_nearby_drones(ship):
+    """ Returns list of drones carrying ore ordered by distance to the ship. """
+    q = f"""
+        select
+            reg.shipSymbol,
+            inv.capacity,
+            inv.totalUnits,
+            inv.symbol,
+            inv.units,
+            nav_src.waypointSymbol,
+            reg_hauler.shipSymbol as haulerSymbol,
+            dists.src as haulerWaypoint,
+            dists.dist as dist
+        from 'ship.REGISTRATION' reg
+
+        inner join 'ship.CARGO' inv
+        on reg.shipSymbol = inv.shipSymbol
+        and reg.role = "EXCAVATOR"
+        and inv.totalUnits >= round(inv.capacity/1.75)
+        and inv.symbol <> "DUMMY"
+
+        inner join 'ship.NAV' nav_src
+        on reg.shipSymbol = nav_src.symbol
+
+        join 'ship.REGISTRATION' reg_hauler
+        on reg.shipSymbol <> reg_hauler.shipSymbol
+        and reg_hauler.role in ("COMMAND", "HAULER")
+        and reg_hauler.shipSymbol = "{ship}"
+
+        inner join 'ship.NAV' nav_sink
+        on reg_hauler.shipSymbol = nav_sink.symbol
+
+        inner join WP_DISTANCES dists
+        on nav_sink.waypointSymbol = dists.src and nav_src.waypointSymbol = dists.dst
+
+        order by dist asc
+    """
+    return io.read_dict(q)
+
+async def haul_ore(ship):
+    """ Orders ship to continually look for drones with a full hold and collect ores, and then sell them off. """
+    timeout_s = 5 # Time between loops
+    while True:
+
+        # If we're carrying cargo, keep filling up
+        cur_cargo = F_trade.get_ship_cargo(ship)
+        if cur_cargo['units'] < cur_cargo['capacity']:
+            # Find closest probes with full holds
+            drones = find_nearby_drones(ship)
+
+            if len(drones) > 0:
+                # Drain its cargo
+                if not await drain_cargo_from_ship(ship, drones[0]['shipSymbol']):
+                    print(f"[ERROR] {ship} was unable to drain cargo from {drones[0]['shipSymbol']}.")
+        
+        # Otherwise, go sell it off
+        else:
+            if not await clear_cargo(ship):
+                print(f"[ERROR] {ship} was unable to sell off its collected haul.")
+
+        await asyncio.sleep(timeout_s)
 
 ### CONTRACTS ###
 

@@ -120,12 +120,14 @@ async def buy_from_market(ship : str, market : str, goods : dict):
 
 async def buy_from_shipyard(ship, shipyard, target_ship_type):
     """ Navigates to shipyard and tries to buy a ship there. """
+
+    # If in-transit while receiving this order, wait until destination reached to progress
+    await await_navigation(ship)
     
     # Navigate to shipyard
     if not await navigate(ship, shipyard):
         print(f"[ERROR] {ship} failed to reach {shipyard}. Aborting purchase.")
         return False
-    await await_navigation(ship)
 
     # Attempt to buy the ship
     if not F_trade.buy_ship(ship, shipyard, target_ship_type):
@@ -146,7 +148,9 @@ async def update_market(ship, waypoint):
     
     # Lock ship - This is a blocking action
     fleet_res_mgr.set_ship_blocked_status(ship, True)
-        
+    
+    # If moving before this order is received, wait until arrival before proceeding
+    await await_navigation(ship)
     arrived = (F_nav.get_ship_waypoint(ship) == waypoint)
     
     if not arrived:
@@ -185,17 +189,19 @@ async def fetch_cargo_from_ship(sink_ship, source_ship, good, units=None):
             if i["symbol"] == good:
                 to_transfer = i["units"]
 
-    success = F_trade.transfer_cargo(source_ship, sink_ship, good, to_transfer)
-    if not success:
-        print(f"[ERROR] {sink_ship} failed to fetch {units} {good} from {source_ship}.")
-    else:
-        print(f"[INFO] {sink_ship} fetched {to_transfer} {good} from {source_ship}.")
+    success = True
+    if to_transfer > 0:
+        success = F_trade.transfer_cargo(source_ship, sink_ship, good, to_transfer)
+        if not success:
+            print(f"[ERROR] {sink_ship} failed to fetch {units} {good} from {source_ship}.")
+        else:
+            pass
+            #print(f"[INFO] {sink_ship} fetched {to_transfer} {good} from {source_ship}.")
 
     return success
 
 async def drain_cargo_from_ship(sink_ship, source_ship):
     """ Sends sink_ship to go fetch all cargo from source_ship. """
-    # TODO: Implement checks for cargo capacity
     success = True
     for i in F_trade.get_ship_cargo(source_ship).get('inventory', list()):
         cur_cargo = F_trade.get_ship_cargo(sink_ship)
@@ -207,17 +213,23 @@ async def clear_cargo(ship):
     """ Tries to rid the ship of its cargo. Will prefer selling goods at the best price, but may jettison. """
     best_prices_q = f"""
         -- for each item in the inventory, find the max sellPrice in the system (C44 - 6824)
-        select 
-            inv.symbol,
-            tg.marketSymbol,
-            inv.units
-        from 'ship.CARGO' inv
+        select
+            inv.symbol
+            ,ranked.marketSymbol
+            ,inv.units
+            ,ranked.sellPrice
+        from (
+            select 
+                symbol, marketSymbol, sellPrice
+                ,ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY sellPrice DESC) as rn
+            from TRADEGOODS_CURRENT tg
+        ) ranked
 
-        inner join TRADEGOODS_CURRENT tg
-        on inv.symbol = tg.symbol
+        inner join 'ship.CARGO' inv
+        on inv.symbol = ranked.symbol
         and inv.shipSymbol = "{ship}"
 
-        group by inv.symbol
+        where rn = 1
     """
     trades = io.read_dict(best_prices_q)
 
@@ -234,7 +246,9 @@ async def clear_cargo(ship):
 
     F_trade._refresh_cargo(ship) # TODO: Wrap the jettison function so we can track inventory over jettisons and don't need to refresh cargo from API
 
-    return None
+    # Check if cargo hold is truly empty
+    cur_cargo = F_trade.get_ship_cargo(ship)
+    return (cur_cargo['units'] == 0)
 
 # Market recon loop
 async def market_update_loop(ship, path=None, loops=-1):
@@ -458,14 +472,14 @@ async def boost_good_growth(ship, system, goods):
     while True:
         loops += 1
 
+        # Sanity check - ensure that the ship isn't in transit
+        await await_navigation(ship)
         # Sanity check - Ship has an empty hold
         cargo_held = F_trade.get_ship_cargo(ship)['units']
         if cargo_held > 0:
             print(f"[ERROR] {ship} is trying to trade with a non-empty hold. Standing by for intervention.")
             return False
-        # Sanity check - ensure that the ship isn't in transit
-        await await_navigation(ship)
-
+        
         # Try picking a route
         candidates = io.read_dict(selection_query)
         route_data = None
@@ -592,6 +606,9 @@ def find_nearby_drones(ship):
 
 async def haul_ore(ship):
     """ Orders ship to continually look for drones with a full hold and collect ores, and then sell them off. """
+    # Preconditions - Ship should not be in transit before the main job starts
+    await await_navigation(ship)
+
     timeout_s = 5 # Time between loops
     while True:
 
@@ -612,6 +629,78 @@ async def haul_ore(ship):
                 print(f"[ERROR] {ship} was unable to sell off its collected haul.")
 
         await asyncio.sleep(timeout_s)
+
+
+### CONSTRUCTION ###
+
+async def deliver_construction_goods(ship, system):
+    """ Orders the ship to find the construction point in the system and delivers the necessary materials. """
+
+    # Find waypoint under construction
+    construction_wps = io.read_list("""select symbol from 'nav.WAYPOINTS' where isUnderConstruction""")
+    if len(construction_wps) < 1:
+        print(f"[INFO] {ship} could not locate any construction sites. Cancelling construction.")
+        return True
+
+    # Find the construction goods it still needs
+    constr_wp = construction_wps[0][0]
+    constr_r = ST.get_request(f'/systems/{system}/waypoints/{constr_wp}/construction')
+    if constr_r.status_code != 200:
+        print(f"[ERROR] {ship} failed to fetch construction site details for {constr_wp}. Aborting construction.")
+        return False
+    constr_r = constr_r.json()["data"]
+
+    # Sanity check - Early return if the site has already been completed
+    if constr_r['isComplete']:
+        print(f"[INFO] Construction at {constr_wp} already finished. Cancelling construction.")
+        return True
+
+    # Locate the cheapest good on the list
+    materials_needed = constr_r['materials']
+    goods = [m['tradeSymbol'] for m in materials_needed]
+    source_market_q = f"""
+                        select
+                            symbol,
+                            marketSymbol
+                        from tradegoods_current tg
+                        where symbol in ({', '.join([f'"{g}"' for g in goods])})
+                        and type <> "IMPORT"
+                        order by purchasePrice
+                    """
+    source_trade = io.read_list(source_market_q)
+    if not source_trade:
+        print(f"[ERROR] {ship} could not locate source market for {constr_r} (seeking {goods}). Aborting construction.")
+    source_trade = source_trade[0]
+                        
+    # Buy the materials
+    mat_to_buy = list(filter(lambda m : m['tradeSymbol'] == source_trade[0], materials_needed))[0]
+    cur_cargo = F_trade.get_ship_cargo(ship)
+    units_to_buy = min(cur_cargo['capacity'] - cur_cargo['units'], mat_to_buy['required'] - mat_to_buy['fulfilled'])
+    if not await buy_from_market(ship, source_trade[1], {mat_to_buy['tradeSymbol']: units_to_buy}):
+        print(f"[ERROR] {ship} failed to procure {units_to_buy} {mat_to_buy['tradeSymbol']} to {constr_wp}. Aborting construction.")
+    
+    # Go to the construction site
+    if not await navigate(ship, constr_wp):
+        print(f"[ERROR] {ship} failed to reach construction site {constr_wp}. Aborting construction.")
+        return False
+
+    # Dock
+    if not F_nav.dock_ship(ship):
+        print(f"[ERROR] {ship} failed to dock at construction site {constr_wp}. Aborting construction.")
+        return False
+
+    # Deliver the materials
+    r = ST.post_request(f'systems/{system}/waypoints/{constr_wp}/construction/supply', data={'shipSymbol': ship, 'tradeSymbol': mat_to_buy['tradeSymbol'], 'units': units_to_buy})
+    if r.status_code != 201:
+        print(f"[ERROR] {ship} failed to deliver {units_to_buy} {mat_to_buy['tradeSymbol']} to {constr_wp}. Aborting construction.")
+        return False
+
+    # Update cargo
+    F_trade._add_cargo(ship, {'symbol': mat_to_buy['tradeSymbol'], 'units': -units_to_buy})
+
+    return True
+    
+
 
 ### CONTRACTS ###
 

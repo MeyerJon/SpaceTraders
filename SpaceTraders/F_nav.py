@@ -387,7 +387,10 @@ def refuel_ship(ship, units=None, from_cargo=None, verbose=False):
         body['fromCargo'] = from_cargo
     fuel_r = ST.post_request(f'/my/ships/{ship}/refuel', data=body)
 
-    if fuel_r.status_code != 200:
+    if fuel_r.status_code == 400: 
+        # No fuel sold in this location -- probably a navigate call trying and failing to auto-refuel (code 4601)
+        return False
+    elif fuel_r.status_code != 200:
         print(f'[ERROR] Ship {ship} failed to refuel.')
         print(f' [INFO]', fuel_r.json())
         return False

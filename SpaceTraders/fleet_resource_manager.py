@@ -106,11 +106,10 @@ def request_ship(ship : str, controller : str, priority : int):
         return False
     
     # If the ship isn't blocked, but showing as in-transit, it may have lost its controller without being released. This should be flagged
+    # In these cases, the requesting controller may get the ship. It's assumed that the previous one shut down unexpectedly and the ship is ready for new orders
     if F_nav.get_ship_nav(ship)['status'] == "IN_TRANSIT":
         print(f"[WARNING] Fleet resources has detected a moving ship without controller: {ship}.")
         F_nav._refresh_ship_nav(ship) # Attempt self-repair by forcing a nav reset
-        return False
-
     
     # Check current controller
     cur_ctrl, cur_prio = get_ship_controller(ship)

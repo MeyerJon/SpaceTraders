@@ -287,7 +287,7 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                 fleet_resource_manager.release_ship(p)
                 fleet.pop(p)
             
-            print(f"[INFO] {controller_id} succesfully refreshed {successes} markets.")
+            if successes > 0: print(f"[INFO] {controller_id} succesfully refreshed {successes} markets.")
             if failures > 0: print(f"[INFO] {controller_id} is reporting {failures} failures to refresh.")
 
             await asyncio.sleep(1) # Brief breather for the main loop

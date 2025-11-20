@@ -23,14 +23,13 @@ async def booster_squad(haulers):
 
 async def main():
     await asyncio.gather(
-        siphoner_squad(haulers=['RYVIOS-6'], drones=['RYVIOS-5', 'RYVIOS-7']),
-        greedy_squad(haulers=["RYVIOS-4"]),
-        booster_squad(haulers=["RYVIOS-8"]),
+        siphoner_squad(haulers=['RYVIOS-6'], drones=['RYVIOS-5', 'RYVIOS-7', 'RYVIOS-9']),
+        greedy_squad(haulers=["RYVIOS-4", "RYVIOS-8"]),
         satellite_squad()
     )
 
 def shutdown():
-    io.update_records_custom("""UPDATE TABLE 'control.SHIP_LOCKS' 
+    io.update_records_custom("""UPDATE 'control.SHIP_LOCKS' 
                                 SET 
                                     controller = NULL,
                                     priority = -1,

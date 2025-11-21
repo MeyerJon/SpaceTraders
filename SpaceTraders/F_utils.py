@@ -49,7 +49,11 @@ def get_ship_cooldown(ship : str):
     if not cd:
         print(f"[ERROR] Failed to fetch cooldown info for {ship}.")
         return False
-    return cd[0]
+    # Adjust remaining seconds to reflex actual time instead of whatever was written initially
+    cd = cd[0]
+    if cd['expiration'] is not None:
+        cd['remainingSeconds'] = max(0, ts_delta_seconds(cd['expiration']))
+    return cd
 
 
 ### PERSISTENCE - REFRESHES ###

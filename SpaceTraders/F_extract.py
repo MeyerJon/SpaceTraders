@@ -18,33 +18,51 @@ import math, datetime, time
 ### SETTERS ###
 
 ### ACTIONS ###
-def extract(ship : str):
-    """ Orders ship to extract at current location. Returns success status. Updates cargo & cooldown for ship. """
+def extract(ship : str, goods : list = None):
+    """ Orders ship to extract at current location. Returns success status. Updates cargo & cooldown for ship. 
+        Parameters:
+            - goods [list<str>] : If provided, only keeps the specified goods (jettisons any others in its inventory)
+    """
     r = ST.post_request(f'/my/ships/{ship}/extract')
     if r.status_code == 201:
         data = r.json()['data']
+        e_yield = data["extraction"]["yield"]
 
         # Refresh cargo
         F_trade._refresh_cargo(ship, data['cargo'])
 
         # Refresh cooldown
         F_utils._refresh_ship_cooldown(ship, data['cooldown'])
+
+        # Check the goods filter
+        if goods is not None and e_yield['symbol'] not in goods:
+            # If undesired good was extracted, jettison immediately
+            F_trade.jettison_cargo(ship, e_yield['symbol'], e_yield['units'])           
 
         return True
     else:
         return False
     
-def siphon(ship : str):
-    """ Orders ship to siphon at current location. Returns success status. Updates cargo & cooldown for ship. """
+def siphon(ship : str, goods : list = None):
+    """ Orders ship to siphon at current location. Returns success status. Updates cargo & cooldown for ship. 
+        Parameters:
+            - goods [list<str>] : If provided, only keeps the specified goods (jettisons any others in its inventory)
+    """
     r = ST.post_request(f'/my/ships/{ship}/siphon')
     if r.status_code == 201:
         data = r.json()['data']
+        e_yield = data["siphon"]["yield"]
 
         # Refresh cargo
         F_trade._refresh_cargo(ship, data['cargo'])
 
         # Refresh cooldown
         F_utils._refresh_ship_cooldown(ship, data['cooldown'])
+
+        # Check the goods filter
+        if goods is not None and e_yield['symbol'] not in goods:
+            # If undesired good was extracted, jettison immediately
+            F_trade.jettison_cargo(ship, e_yield['symbol'], e_yield['units'])
 
         return True
     else:

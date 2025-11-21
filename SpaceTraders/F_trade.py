@@ -149,6 +149,17 @@ def transfer_cargo(src_ship, sink_ship, good, units, verbose=True):
 
     return True
 
+def jettison_cargo(ship, good, units):
+    """ Jettisons specified units of a good. """
+    r = ST.post_request(f'/my/ships/{ship}/jettison', data={'symbol': good, 'units': units})
+    if r.status_code != 200:
+        print(f"[ERROR] {ship} could not jettison {units} {good}:")
+        print(f"       ", r.json())
+        return False
+    # If successful, update cargo
+    _add_cargo(ship, {'symbol': good, 'units': -units})
+    return True
+
 def sell_cargo(ship, good, units, verbose=True):
     """ Sells the specified volume of a good. 
         Returns status [boolean] - True if sale successfully executed.
@@ -420,7 +431,11 @@ def _refresh_cargo(ship : str, cargo : dict = None):
 
 def _add_cargo(ship : str, cargo : dict):
     """ Adds given goods/cargo to the ship's tracked inventory (positive or negative units can be passed for the mutation). 
-        If the ship has none of that good left, the record is deleted from the DB. Does not take any actions; just updates the database. """
+        If the ship has none of that good left, the record is deleted from the DB. Does not take any actions; just updates the database. 
+        Parameters:
+            - ship [str]   : Symbol of the ship
+            - cargo [dict] : {'symbol': tradeSymbol, 'units': int}
+    """
     cur_cargo = get_ship_cargo(ship)
     to_write = dict()
     new_units = cargo['units']

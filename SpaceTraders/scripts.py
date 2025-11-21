@@ -241,10 +241,11 @@ async def clear_cargo(ship):
     # Jettison any leftover cargo
     cargo = F_trade.get_ship_cargo(ship)
     for i in cargo["inventory"]:
-        ST.post_request('/my/ships/{ship}/jettison', data={'symbol': i['symbol'], 'units': i['units']})
+        #ST.post_request(f'/my/ships/{ship}/jettison', data={'symbol': i['symbol'], 'units': i['units']})
+        F_trade.jettison_cargo(ship, i['symbol'], i['units'])
         await asyncio.sleep(0.2)
 
-    F_trade._refresh_cargo(ship) # TODO: Wrap the jettison function so we can track inventory over jettisons and don't need to refresh cargo from API
+    #F_trade._refresh_cargo(ship) # TODO: Wrap the jettison function so we can track inventory over jettisons and don't need to refresh cargo from API
 
     # Check if cargo hold is truly empty
     cur_cargo = F_trade.get_ship_cargo(ship)
@@ -612,7 +613,7 @@ async def haul_ore(ship):
     timeout_s = 5 # Time between loops
     while True:
 
-        # If we're carrying cargo, keep filling up
+        # If there's room for more cargo, keep filling up
         cur_cargo = F_trade.get_ship_cargo(ship)
         if cur_cargo['units'] < cur_cargo['capacity']:
             # Find closest probes with full holds
@@ -700,6 +701,33 @@ async def deliver_construction_goods(ship, system):
 
     return True
     
+async def construction_loop(ship, frequency : int):
+    """ Does a construction delivery run every frequency seconds. """
+    # Lock the ship
+    fleet_res_mgr.lock_ship(ship, 'CONSTRUCTION-SHIP', 100)
+
+    # Start loop
+    system = F_utils.system_from_wp(F_nav.get_ship_waypoint(ship))
+    if frequency < 180:
+        print(f"[INFO] {ship} starting a construction job. Will deliver materials every {frequency} seconds.")
+    else:
+        print(f"[INFO] {ship} starting a construction job. Will deliver materials every {frequency/60:.1f} minutes.")
+
+    try:
+        while True:
+            success = await deliver_construction_goods(ship, system)
+            if not success:
+                print(f"[ERROR] {ship} failed to deliver construction materials.")
+            await asyncio.sleep(frequency)
+    except KeyboardInterrupt as e:
+        print("[INFO] KeyboardInterrupt caught. Shutting down.")
+    except Exception as e:
+        print("[ERROR] Uncaught exception while constructing:")
+        print(e)
+        io.log_exception(e)
+    finally:
+        fleet_res_mgr.release_ship(ship)
+
 
 
 ### CONTRACTS ###

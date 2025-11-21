@@ -49,14 +49,8 @@ async def mine_goods(ship: str, waypoint : str, goods : list = None):
             await asyncio.sleep(refresh_period)
             continue
 
-        if F_extract.siphon(ship):
-            # Check if the good is desired; if not, jettison it immediately.
-            """
-            if goods is not None:
-                e_yield = data['extraction']['yield']
-                if e_yield['symbol'] not in goods:
-                    ST.post_request(f'/my/ships/{ship}/jettison', data={'symbol': e_yield['symbol'], 'units': e_yield['units']})
-            """
+        if F_extract.siphon(ship, goods=goods):
+            
             # Check cargo capacity
             cargo = F_trade.get_ship_cargo(ship)
             if cargo['capacity'] <= cargo['units']:

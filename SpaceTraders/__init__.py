@@ -74,9 +74,9 @@ def _request_with_retries(req_f, params):
             time.sleep(backoff_seconds)
             continue # Move on to retry
     # If loop ends without return, max retries was hit and we've failed
-    # TODO how to handle? for now just return response
+    # TODO how to handle? for now just return a custom 5XX status code that indicates this generic failure
     print("[WARNING] Rate limit hit and retries failed. Returning response as-is, which may result in errors.")
-    return resp
+    return {"status_code": 599}
 
 def get_request(url, params=None, headers=None):
     """ Makes a GET request to the SpaceTraders API. """
@@ -145,47 +145,6 @@ def extract_until_full(ship, verbose=True):
     # If the loop isn't exited on either path, we've hit the iteration limit
     print(f'[WARNING] Ship {ship} is aborting extraction -- operation timed out.')
     return False
-
-def mine_goods_old(ship, goods, verbose=True):
-    """ Extracts from the current waypoint until cargo hold is filled, keeping only the desired goods.
-        This function blocks the thread.
-    """
-    max_iterations = 50
-
-    # Orbit location
-    orbit_ship(ship)
-
-    for _it in range(max_iterations):
-        r = post_request(BASE_URL + f'/my/ships/{ship}/extract')
-        if r.status_code == 201:
-            data = r.json()['data']
-
-            # Check if the good is desired; if not, jettison it immediately.
-            e_yield = data['extraction']['yield']
-
-            if verbose:
-                print(f"[INFO] Ship {ship} extracted {e_yield['units']} {e_yield['symbol']}.")
-
-            if e_yield['symbol'] not in goods:
-                post_request(BASE_URL + f'/my/ships/{ship}/jettison', data={'symbol': e_yield['symbol'], 'units': e_yield['units']})
-
-                if verbose:
-                    print(f"[INFO] Ship {ship} jettissoned {e_yield['units']} {e_yield['symbol']}.")
-            
-            if data['cargo']['capacity'] <= data['cargo']['units']:
-                # Hold is full. Stop extracting.
-                if verbose:
-                    print(f'[INFO] Ship {ship} finished extracting (full hold).')
-                return True
-            # Otherwise, sleep until next extraction
-            cd = data['cooldown']['remainingSeconds']
-            time.sleep(cd)
-        else:
-            print(f'[ERROR] Ship {ship} failed to extract. Aborting operation.')
-            print(f' [INFO]', r.json())
-            return False
-        
-
 
 
 ### CONTRACTS ###

@@ -43,7 +43,8 @@ async def navigate(ship, destination_wp):
             break
     
     # Update ship info again once arrived to ensure internal consistency
-    F_nav._refresh_ship_nav(ship)
+    # TODO: Removing this redundant call -- shouldn't have any impact since navigate call already updates the DB 
+    #F_nav._refresh_ship_nav(ship)
 
     # Final check -- navigate returns True iff ship at destination
     if F_nav.get_ship_waypoint(ship) == destination_wp:
@@ -658,7 +659,7 @@ async def deliver_construction_goods(ship, system):
 
     # Locate the cheapest good on the list
     materials_needed = constr_r['materials']
-    goods = [m['tradeSymbol'] for m in materials_needed]
+    goods = [m['tradeSymbol'] for m in materials_needed if (m['required'] - m['fulfilled'] > 0)]
     source_market_q = f"""
                         select
                             symbol,
@@ -718,6 +719,8 @@ async def construction_loop(ship, frequency : int):
             success = await deliver_construction_goods(ship, system)
             if not success:
                 print(f"[ERROR] {ship} failed to deliver construction materials.")
+            else:
+                print(f"[INFO] {ship} completed delivery for construction.")
             await asyncio.sleep(frequency)
     except KeyboardInterrupt as e:
         print("[INFO] KeyboardInterrupt caught. Shutting down.")

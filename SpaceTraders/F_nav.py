@@ -193,10 +193,27 @@ def get_fuel_required(wp1, wp2, flightmode='CRUISE'):
     elif flightmode == 'BURN': return 2*round(d)
     elif flightmode == 'STEALTH': return round(d)
 
+def get_ship_fuel(ship):
+    # Try the cache
+    cache_q = f"select * from 'ship.FUEL' where shipSymbol = \"{ship}\""
+    fuel = io.read_dict(cache_q)
+    if len(fuel) > 0:
+        fuel = fuel[0]
+    else:
+        # Refresh the cache
+        if not _refresh_ship_fuel(ship):
+            print(f"[ERROR] Could not get fuel for {ship} : invalid shipSymbol.")
+            return False
+        fuel = io.read_dict(cache_q)[0]
+    return fuel
+
 def get_fuel_capacity(ship):
     """ Returns the ship's fuel capacity. """
-    si = ST.get_ship_info(ship)
-    return si['fuel']['capacity']
+    fuel = get_ship_fuel(ship)
+    if fuel:
+        return fuel['capacity']
+    else:
+        return False
 
 def check_in_transit(ship, verbose=True):
     """ Returns True if a ship is currently in transit/navigating somewhere. """
@@ -207,10 +224,16 @@ def check_in_transit(ship, verbose=True):
     else:
         return r.json()['data']['nav']['status'] == 'IN_TRANSIT'
 
-def get_path(ship, src, dst):
-    """ Returns a list (hop, flightmode) that allow the ship to reach the destination waypoint in the least time. If no path available, returns empty list. """
+def get_path(ship, src, dst, ignore_current_fuel=True):
+    """ Returns a list (hop, flightmode) that allow the ship to reach the destination waypoint in the least time. If no path available, returns empty list. 
+        Parameters:
+            - ignore_current_fuel [bool] : If False, takes into account how much fuel the ship currently has instead of assuming a full tank.
+    """
     fuelcap = get_fuel_capacity(ship) - 1.0
     burncap = math.floor(fuelcap / 2.0) - 1.0 # Pessimistic estimate of how much fuel can be used to burn
+    cur_fuel = fuelcap
+    if not ignore_current_fuel:
+        cur_fuel = None # TODO: Make this function fuel-aware to avoid edge-cases where the ship can't actually follow the path
     
     # Probes / Satellites have to drift everywhere, but other ships should give a warning if they have no fuel capacity
     if fuelcap < 1:
@@ -359,11 +382,13 @@ def navigate_in_system(ship, waypoint, flightmode='CRUISE', verbose=True):
         return False
 
     # Update the database
-    _refresh_ship_nav(ship, nav_r.json()['data']['nav'])
+    nav_r = nav_r.json()['data']
+    _refresh_ship_nav(ship, nav_r['nav'])
+    _refresh_ship_fuel(ship, nav_r['fuel'])
 
     if verbose:
         # Check navigation time
-        status = nav_r.json()['data']['nav']
+        status = nav_r['nav']
         dept_time = status['route']['departureTime'][:-1] # Removes the 'Z' at the end to parse properly
         arrival_time = status['route']['arrival'][:-1]
         delta_time = datetime.fromisoformat(arrival_time) - datetime.fromisoformat(dept_time)
@@ -395,8 +420,12 @@ def refuel_ship(ship, units=None, from_cargo=None, verbose=False):
         print(f' [INFO]', fuel_r.json())
         return False
     
+    # Refresh database
+    fuel_r = fuel_r.json()['data']
+    _refresh_ship_fuel(ship, fuel_r['fuel'])
+
     if verbose:
-        t = fuel_r.json()['data']['transaction']
+        t = fuel_r['transaction']
         print(f"[INFO] Ship {ship} refueled {t['units']} units. Total cost: {t['totalPrice']} cr ({t['pricePerUnit']} cr/u).")
 
     return True
@@ -468,8 +497,19 @@ def _refresh_ship_mounts(ship : str, mounts : list = None):
         success = io.write_data('ship.MOUNTS', enriched, mode="update", key=["shipSymbol", "symbol"]) and success
     return success
 
+def _refresh_ship_fuel(ship : str, fuel : dict = None):
+    """ Updates the ship's fuel. If 'fuel' is passed a Fuel object, uses that to update instead of the API. """
+    if fuel is None:
+        r = ST.get_request(f'/my/ships/{ship}')
+        if not r.status_code == 200:
+            print(f"[ERROR] Failed to refresh fuel status for {ship} : could not fetch ship info.")
+            return False
+        fuel = r.json()['data']['fuel']
+    
+    return io.write_data('ship.FUEL', {'shipSymbol': ship, 'current': fuel['current'], 'capacity': fuel['capacity']}, mode="update", key=["shipSymbol"])
+
 def _refresh_waypoints(system):
-    """ Refresh the cache for the details of all waypoints in a system.
+    """ Refresh the cache for the details of all (charted) waypoints in a system.
         Writes to
             nav.WAYPOINTS 
             nav.TRAITS
@@ -549,5 +589,6 @@ def _refresh_ships(ships=None):
         _refresh_ship_nav(s["symbol"], s['nav'])
         _refresh_ship_registration(s["symbol"], s["registration"])
         _refresh_ship_mounts(s["symbol"], s["mounts"])
+        _refresh_ship_fuel(s['symbol'], s['fuel'])
 
     io.write_data("ship.REGISTRATION", data_registration, mode="update", key=["shipSymbol"])

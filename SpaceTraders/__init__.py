@@ -1,6 +1,7 @@
 import requests, time, math, sqlite3, json
 import pandas as pd
 from datetime import datetime
+from dataclasses import dataclass
 from SpaceTraders import io
 
 ### GLOBALS ###
@@ -18,6 +19,15 @@ with open('./agent_token.txt', 'r') as ifile:
 
 
 ### REQUESTS ###
+@dataclass
+class BadResponse():
+    """ Represents issues that aren't covered by normal HTTP responses from the server. """
+    status_code : int
+
+    def json(self):
+        return {"status_code": self.status_code, "data": dict()}
+
+
 def get_auth_header():
     return {'Authorization': f'Bearer {ACCOUNT_TOKEN}', 'Content-Type': 'application/json'}
 
@@ -55,8 +65,8 @@ def _cleaned_endpoint(base, endpoint):
     
 def _request_with_retries(req_f, params):
     """ Makes a given request, and retries if it fails. """
-    max_retries     = 4
-    backoff_seconds = 0.35
+    max_retries     = 5
+    backoff_seconds = 0.25
     resp = None
     for r in range(max_retries):
         try:
@@ -71,27 +81,25 @@ def _request_with_retries(req_f, params):
             print(f"[ERROR] Unhandled exception during API request:")
             print(e)
             io.log_exception(e)
-            time.sleep(backoff_seconds)
+            print(f"[ERROR] Backing off for {backoff_seconds * (r+1):.2f} seconds.")
+            time.sleep(backoff_seconds * r)
             continue # Move on to retry
     # If loop ends without return, max retries was hit and we've failed
     # TODO how to handle? for now just return a custom 5XX status code that indicates this generic failure
-    print("[WARNING] Rate limit hit and retries failed. Returning response as-is, which may result in errors.")
-    return {"status_code": 599}
+    print("[WARNING] Rate limit hit and retries failed. Returning BadResponse.")
+    return BadResponse(599)
 
 def get_request(url, params=None, headers=None):
     """ Makes a GET request to the SpaceTraders API. """
     return _request_with_retries(_generic_get_request, {'url': _cleaned_endpoint(BASE_URL, url), 'params': params, 'headers': headers}) 
-    #return _generic_get_request(_cleaned_endpoint(BASE_URL, url), params, headers)
 
 def post_request(url, data=None, headers=None):
     """ Makes a POST request to the SpaceTraders API. """
     return _request_with_retries(_generic_post_request, {'url': _cleaned_endpoint(BASE_URL, url), 'data': data, 'headers': headers}) 
-    #return _generic_post_request(_cleaned_endpoint(BASE_URL, url), data, headers)
 
 def patch_request(url, data=None, headers=None):
     """ Makes a PATCH request to the SpaceTraders API. """
     return _request_with_retries(_generic_patch_request, {'url': _cleaned_endpoint(BASE_URL, url), 'data': data, 'headers': headers}) 
-    #return _generic_patch_request(_cleaned_endpoint(BASE_URL, url), data, headers)
 
 
 ### LOGGING / MONITORING ###
@@ -215,7 +223,7 @@ def deliver_cargo(contract_id, ship, good, verbose=True):
 
     # Determine units to deliver
     # Units in inventory
-    cargo = get_ship_cargo(ship)['inventory']
+    cargo = F_trade.get_ship_cargo(ship)['inventory']
     in_hold = list(filter(lambda i : i['symbol'] == good, cargo))
     if len(in_hold) == 0:
         print(f'[ERROR] Ship {ship} has no {good} to deliver. Delivery aborted.')
@@ -239,7 +247,7 @@ def deliver_cargo(contract_id, ship, good, verbose=True):
     to_deliver = min(in_hold, required)
 
     # Dock
-    dock_ship(ship)
+    F_nav.dock_ship(ship)
 
     # Attempt delivery
     r = post_request(BASE_URL + f'/my/contracts/{contract_id}/deliver', data={'shipSymbol': ship, 'tradeSymbol': good, 'units': to_deliver})

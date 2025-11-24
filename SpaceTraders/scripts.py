@@ -359,8 +359,8 @@ def scan_shipyards(ship):
 async def execute_trade(ship : str, source_market : str, sink_market : str, goods : dict):
     """ Commands the ship to execute a trade. Handles the whole trade end-to-end, reports success. """
     # Sanity check - Ship has an empty hold
-    cargo_held = F_trade.get_ship_cargo(ship)['units']
-    if cargo_held > 0:
+    cargo_held = F_trade.get_ship_cargo(ship)
+    if cargo_held['units'] > 0:
         print(f"[ERROR] {ship} is trying to trade with a non-empty hold. Standing by for intervention.")
         return False
     # Sanity check - ensure that the ship isn't in transit
@@ -449,7 +449,7 @@ async def naive_trader(ship, run_interval = None):
         # Idle until next loop
         await asyncio.sleep(interval_seconds)
 
-async def boost_good_growth(ship, system, goods):
+async def boost_good_growth(ship, system, goods, iterations=None):
     """ Tries growing market volumes for given goods, in given system. """
     loops            = 0
     interval_seconds = 30
@@ -480,7 +480,7 @@ async def boost_good_growth(ship, system, goods):
         cargo_held = F_trade.get_ship_cargo(ship)['units']
         if cargo_held > 0:
             print(f"[ERROR] {ship} is trying to trade with a non-empty hold. Standing by for intervention.")
-            return False
+            await clear_cargo(ship)
         
         # Try picking a route
         candidates = io.read_dict(selection_query)
@@ -495,6 +495,9 @@ async def boost_good_growth(ship, system, goods):
             success = await execute_trade(ship, route_data['export_market'], route_data['target_market'], trade_goods)
         else:
             print(f"[INFO] {ship} found no suitable routes. Standing by.")
+
+        if (iterations is not None) and (loops >= iterations):
+            break
 
         # Idle until next loop
         await asyncio.sleep(interval_seconds)

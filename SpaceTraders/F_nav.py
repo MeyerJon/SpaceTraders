@@ -233,7 +233,7 @@ def get_path(ship, src, dst, ignore_current_fuel=True):
     burncap = math.floor(fuelcap / 2.0) - 1.0 # Pessimistic estimate of how much fuel can be used to burn
     cur_fuel = fuelcap
     if not ignore_current_fuel:
-        cur_fuel = None # TODO: Make this function fuel-aware to avoid edge-cases where the ship can't actually follow the path
+        cur_fuel = get_ship_fuel(ship)['current'] # TODO: Make this function fuel-aware to avoid edge-cases where the ship can't actually follow the path
     
     # Probes / Satellites have to drift everywhere, but other ships should give a warning if they have no fuel capacity
     if fuelcap < 1:
@@ -252,16 +252,18 @@ def get_path(ship, src, dst, ignore_current_fuel=True):
     nodes = list(set(nodes))
     path = list()
     while True:
+        burncap = math.floor(cur_fuel / 2.0) - 1.0 # Pessimistic estimate of how much fuel can be used to burn
+
         # If a direct path is possible, just use that. This is a separate case because some waypoints have the same location (planet & its moons), which can mess with the distance-ordering below otherwise
         dst_dist = wp_distance(cur_node, dst)
-        if dst_dist < fuelcap:
+        if dst_dist < min(cur_fuel, fuelcap):
             flightmode = "BURN" if ((dst_dist < burncap) and dst in fuel_nodes) else "CRUISE" # Don't burn to places you can't refuel
             path.append((dst, flightmode, dst_dist))
             break
 
         # Pathing can happen greedily, since we're in 'open space': the shortest path is a straight line, or something approaching it.
         # Find the next node by trying to go as far as fuel allows
-        reachable = list(filter(lambda wp : get_fuel_required(cur_node, wp) < fuelcap, nodes))
+        reachable = list(filter(lambda wp : get_fuel_required(cur_node, wp) < min(cur_fuel, fuelcap), nodes))
         if len(reachable) == 0:
             # We've hit a dead end -- pathing failed
             return list()
@@ -278,6 +280,9 @@ def get_path(ship, src, dst, ignore_current_fuel=True):
         # We never want to revisit a node, so remove it from the options
         nodes.remove(cur_node)
         cur_node = next_node
+
+        # Since we can only jump to fuel stops (except for the destination itself), refueling at the next stop is assumed and we reset current fuel to max
+        cur_fuel = fuelcap
 
     return path
 

@@ -17,6 +17,10 @@ def system_from_wp(wp):
     """ Returns just the system part of the waypoint symbol. """
     return '-'.join(wp.split('-')[:-1]) # Waypoints take the form SECTOR-SYSTEM-WAYPOINT
 
+def unix_to_ts(ts):
+    """ Converts unix timestamp into a UTC/iso timestamp. """
+    return datetime.fromtimestamp(ts).strftime('%Y-%m-%dT%H:%M:%SZ') 
+
 def ts_to_dt(timestamp):
     """ Converts server timestamp (UTC/iso) into Python datetime object"""
     return datetime.fromisoformat(timestamp.replace('Z', '+00:00')).astimezone(pytz.UTC)

@@ -16,7 +16,7 @@ import math, datetime, time
 ### PERSISTENCE ###
 def _log_trade(market_transaction : dict):
     """ Records the given transaction to the database. """
-    return io.write_data('TRADES', market_transaction)
+    return io.write_data('TRANSACTIONS', market_transaction)
 
 ### GETTERS ###
 def get_ship_cargo(ship):
@@ -81,13 +81,13 @@ def get_trade_good(good, market):
 
     return tg
 
-def get_total_profit_from_trade(ship, source_market, sink_market, ts_start):
+def get_total_profit_from_trade(ship : str, source_market : str, sink_market : str, ts_start : str):
     query = """
             with trade_transactions as (
                 select
                     *,
                     -1 * totalPrice as credit_mutation
-                    from trades
+                    from TRANSACTIONS
                 where 1=1
                 and shipSymbol = :ship
                 and waypointSymbol = :source_market
@@ -99,7 +99,7 @@ def get_total_profit_from_trade(ship, source_market, sink_market, ts_start):
                 select
                     *,
                     totalPrice as credit_mutation
-                from trades
+                from TRANSACTIONS
                 where 1=1
                 and shipSymbol = :ship
                 and waypointSymbol = :sink_market
@@ -115,10 +115,11 @@ def get_total_profit_from_trade(ship, source_market, sink_market, ts_start):
         if result:
             return result[0][0]
         else:
-            return None
+            return 0
     except Exception as e:
         print(f"[ERROR] Unhandled exception while calculating trade profit for {ship}. Route data:")
         print(f"  params: {source_market=}, {sink_market=}, {ts_start=}")
+        io.log_exception(e)
         return None
 
 

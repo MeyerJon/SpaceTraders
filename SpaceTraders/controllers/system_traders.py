@@ -20,6 +20,7 @@ class TaskTrade():
     source      : str
     sink        : str
     units       : str
+    controller  : str
 
 ### GETTERS ###
 def get_finished_ships(fleet):
@@ -30,84 +31,119 @@ def find_closest_hauler(candidates : list, market : str):
     """ Returns candidate list ordered by distance to market. First in list is closest. """
     return sorted(candidates, key=lambda c : F_nav.wp_distance(market, F_nav.get_ship_waypoint(c)))
 
+def get_ship_trade_profit_since(ship : str, ts_start : int, ts_end : int = None):
+    """ Returns the total profit a ship has made actually trading in the given time window. Timestamps are in unix format and do not account for server-client time offset. Fix your timestamps before calling this. """
+    # Substract 1h because of the timezone difference with the server
+    #ts_start = ts_start-3600
+    #if ts_end: ts_end = ts_end-3600
+    query = f"""
+        select
+            sum(profit)
+        from TRADES
+        where ship = "{ship}"
+        and ts_start >= {ts_start}
+    """
+    if ts_end: query += f"\nand ts_end <= {ts_end}"
+    try:
+        result = io.read_list(query)
+        if result:
+            return result[0][0]
+        else:
+            return 0
+    except Exception as e:
+        print(f"[ERROR] Unhandled exception while calculating total trade profit for {ship} since {ts_start}.")
+        io.log_exception(e)
+        return None
+    
+def get_controller_trade_profit_since(controller : str, ts_start : int, ts_end : int = None):
+    """ See get_ship_trade_profit_since, but for a controller instead of a ship. """
+    query = f"""
+        select
+            sum(profit)
+        from TRADES
+        where controller = "{controller}"
+        and ts_start >= {ts_start}
+    """
+    if ts_end: query += f"\nand ts_end <= {ts_end}"
+    try:
+        result = io.read_list(query)
+        if result:
+            return result[0][0]
+        else:
+            return 0
+    except Exception as e:
+        print(f"[ERROR] Unhandled exception while calculating total trade profit for {controller} since {ts_start}.")
+        io.log_exception(e)
+        return None
+    
+
 
 ### TEMP - DEBUG ###
 async def execute_trade(ship, src, sink, goods):
     print(f"[DEBUG] {ship} would trade {goods} from {src} to {sink}.")
-    await asyncio.sleep(random.randint(100, 300) / 100.0)
+    # Since the controller refreshes tasks every 15 seconds, some of these should take longer (to fully demonstrate functionality)
+    await asyncio.sleep(random.random())
+    if random.random() < 0.66:
+        dt = random.randint(100, 300) / 100.0
+        print(f"[DEBUG] {ship} is executing its trade ({dt:.2f} seconds).")
+        await asyncio.sleep(dt)
+    else:
+        print(f"[DEBUG] {ship} is executing a long trade (17 seconds).")
+        await asyncio.sleep(16.5)
     print(f"[DEBUG] {ship} has finished its mock trade.")
     return True
 
 
 ### HELPERS ###
-async def naive_trader(ship, run_interval = None):
-    """ Picks a 'sustainable' trade route and initiates it. Backs off by default to allow for markets to stabilise. """
-    CONTROLLER_ID = "NAIVE-TRADER-" + ship
-    loops            = 0
-    interval_seconds = run_interval or (60 * 5)
-    selection_query  = \
-                        """
-                        select
-                            *
-                        from TRADE_SYSTEM_MARGINS
-                        where 1=1
-                            and margin > 10
-                            and source_volume >= 6 and sink_volume >= 6
-                            and distance < 250
-                            and src_supply in ("ABUNDANT", "HIGH", "MODERATE")
-                            and sink_supply in ("SCARCE", "LIMITED")
-                            and symbol not in ("FAB_MATS", "ADVANCED_CIRCUITRY", "QUANTUM_STABILIZERS")
-                            order by margin desc
-                        """
-    
-    while True:
-        loops += 1
+def _log_trade(ship : str, trade : TaskTrade, ts_start : int, ts_end : int):
+    """ Writes trade info to database. """
+    # Reminder that we're 1h off the server time, so that's corrected here for the trade calculation
+    data = {"ship": ship,
+            "controller": trade.controller,
+            "tradeSymbol": trade.tradeSymbol,
+            "source": trade.source,
+            "sink": trade.sink,
+            "units": trade.units,
+            "ts_start": ts_start,
+            "ts_end": ts_end,
+            "profit": F_trade.get_total_profit_from_trade(ship, trade.source, trade.sink, F_utils.unix_to_ts(ts_start-3600)) or 0
+            }
+    io.write_data('TRADES', data)
 
-        # Sanity check - Ship has an empty hold
-        ship_cargo = F_trade.get_ship_cargo(ship)
-        cargo_held = ship_cargo['units']
-        if cargo_held > 0:
-            print(f"[INFO] {ship} is trying to trade with a non-empty hold. Clearing cargo first.")
-            await clear_cargo(ship)
-        # Sanity check - ensure that the ship isn't in transit
-        await await_navigation(ship)
+async def execute_trade(ship : str, trade : TaskTrade):
+    """ Task implementation: Handles the trade end-to-end, including recovery & persistence. """
 
-        # Try picking a route
-        candidates = io.read_df(selection_query)
+    # Sanity check - ensure that the ship isn't in transit
+    await scripts.await_navigation(ship)
 
-        route_data = None
-        if len(candidates) > 0:
-            route_data = candidates.iloc[0].to_dict()
-        
-        if route_data is not None:
-            # If a route is found, start it
-            fleet_res_mgr.lock_ship(ship, CONTROLLER_ID, 2)
-            max_cargo = ship_cargo['capacity']
-            max_purchase = min(route_data['source_volume'], route_data['sink_volume'])
-            to_trade = min(max_purchase, max_cargo)
-            exp_profit = to_trade * route_data['margin']
-            print(f"[INFO] {ship} starting trade route: {to_trade} {route_data['symbol']} from {route_data['source']} to {route_data['sink']}. Expected profit is {exp_profit} cr.")
-            trade_goods = {route_data['symbol']:  to_trade}
-            success = await execute_trade(ship, route_data['source'], route_data['sink'], trade_goods)
-            fleet_res_mgr.release_ship(ship)
-        else:
-            print(f"[INFO] {ship} found no suitable routes. Standing by.")
+    # Sanity check - Ship has an empty hold
+    ship_cargo = F_trade.get_ship_cargo(ship)
+    cargo_held = ship_cargo['units']
+    if cargo_held > 0:
+        print(f"[INFO] {ship} is trying to trade with a non-empty hold. Clearing cargo first.")
+        await scripts.clear_cargo(ship)
 
-        # Idle until next loop
-        await asyncio.sleep(interval_seconds)
+    # Actually execute the trade
+    ts_start = int(time.time())
+    success = await scripts.execute_trade(ship, trade.source, trade.sink, {trade.tradeSymbol: trade.units})
+    ts_end = int(time.time())
+    _log_trade(ship, trade, ts_start, ts_end)
+
+    return success
+
 
 def assign_hauler_to_trade(candidates : list, fleet : dict, trade : TaskTrade, controller : str, priority : int):
     """ Finds the most suitable drone & sends it to execute the trade. """
     # Find best candidate
     if len(candidates) < 1: return False
-    probe = find_closest_hauler(candidates, trade.source)[0]
-    acquired = fleet_resource_manager.request_ship(probe, controller, priority)
+    ship = find_closest_hauler(candidates, trade.source)[0]
+    acquired = fleet_resource_manager.request_ship(ship, controller, priority)
     if acquired:
-        fleet[probe] = {
+        fleet[ship] = {
             "trade": trade,
-            "task": asyncio.create_task(execute_trade(probe, trade.source, trade.sink, {trade.tradeSymbol: trade.units})),
+            "task": asyncio.create_task(execute_trade(ship, trade)),
             "time_start": int(time.time())
-        } # TODO: switch back to scripts.execute_trade for actual effect
+        }
         return True
     return False
 
@@ -151,9 +187,12 @@ async def trade_in_system(system : str, max_haulers : int, strategy : str = "gre
     refresh_period = 15
     ongoing_trades = dict() # {item : {src : {sink : n_ongoing}}}
     fleet = dict()
+    time_start = time.time()
 
     # Main loop
+    cycle_profit = {'current': 0, 'previous': 0}
     while True:
+        cycle_profit['current'] = 0
 
         # Check trades according to strategy
         trades = list()
@@ -172,28 +211,36 @@ async def trade_in_system(system : str, max_haulers : int, strategy : str = "gre
                 # There are still active traders on this route, just decrement the counter
                 ongoing_trades[trade.tradeSymbol][trade.source][trade.sink] = n_ongoing - 1
 
+            # Record the ship's profitability
+            ship_profit = get_ship_trade_profit_since(s, fleet[s]['time_start']-3600)
+            cycle_profit['current'] += ship_profit or 0
+
             # Release ship
             fleet_resource_manager.release_ship(s)
             del fleet[s]
 
 
         # Try to clear all trades
+        t_ix = 0 # Start at the beginning of the queue
         while len(trades) > 0:
-            t = trades[0]
 
+            # First of all, check if our fleet is at capacity
+            if len(fleet) >= max_haulers:
+                #print(f"[INFO] {controller} is executing {len(fleet)} trades.")
+                break           
+            
+            t = trades[t_ix]
             n_ongoing = ongoing_trades.get(t['symbol'], dict()).get(t['source'], dict()).get(t['sink'], 0)
-            cur_haulers = len(fleet)
             
             # If trade not already being executed (by max haulers):
-            # And If not yet at max haulers
-            if n_ongoing < t['max_traders'] and cur_haulers < max_haulers:
+            if n_ongoing < t['max_traders']:
                 # Check the list of available haulers
                 haulers = fleet_resource_manager.get_available_ships_in_systems([system], ship_role="HAULER", prio=priority, controller=controller)
                 haulers = [h for h in haulers if h not in fleet]
 
                 # Send closest hauler to source to execute the trade
                 # Mark trade as being executed by one extra hauler
-                trade = TaskTrade(t['symbol'], t['source'], t['sink'], t['trade_volume'])
+                trade = TaskTrade(t['symbol'], t['source'], t['sink'], t['trade_volume'], controller)
                 success = assign_hauler_to_trade(haulers, fleet, trade, controller, priority)
 
                 if success:
@@ -212,6 +259,32 @@ async def trade_in_system(system : str, max_haulers : int, strategy : str = "gre
 
                 # Small random delay to allow traders to spread out temporally
                 await asyncio.sleep(random.randint(20, 300) / 1000.0) 
+            
+            elif t_ix < len(trades):
+                # This trade is already being served by max haulers, so move down the queue if possible
+                t_ix += 1
+                continue
+
+            else:
+                # None of the trades in the queue can be served, so stop trying
+                break
         
+        # Profit report
+        if cycle_profit['current'] != 0:
+            job_profit = get_controller_trade_profit_since(controller, time_start-3600) # Adjust ts_start for 1h time difference
+            total_profit   = get_controller_trade_profit_since(controller, 0)
+            rep = f"[PROFIT REPORT - {controller}] [{time.strftime('%H:%M:%S')}]\n"
+            rep += f"       HOURLY PROFIT :  {job_profit / ((time.time() - time_start) / 3600):.0f} cr/h.\n"
+            rep += f"        TOTAL PROFIT :  {total_profit} cr.\n"
+            rep += f"          JOB PROFIT :  {job_profit} cr. "
+
+            if len(fleet) > 0:
+                rep += "\n\t  <FLEET>"
+                for s in fleet:
+                    s_profit = get_ship_trade_profit_since(s, time_start)
+                    rep += f"\n\t\t     {s} : {s_profit} cr."
+            rep += f"\n\t  Active since {F_utils.unix_to_ts(time_start)}"
+            print(rep)
+ 
         # Politely wait until the next iteration
         await asyncio.sleep(refresh_period)

@@ -245,14 +245,14 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                                                    controller=controller_id, 
                                                    time_delta = refresh_freq)
 
-            print(f"[INFO] {controller_id} is targeting {len(market_queue)} markets.")
+            if len(market_queue) > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is targeting {len(market_queue)} markets.")
     
             # Dispatch ships
             cleared = await dispatch_satellites(system, market_queue, fleet, controller_id, BASE_PRIO_MGR_PROBES)
 
             # If the queue was cleared, we can wait until the next refresh window
             if cleared and refresh_freq > 0:
-                print(f"[INFO] {controller_id} scheduled scans for all markets. Standing by.")
+                #print(f"[INFO] {controller_id} scheduled scans for all markets. Standing by.")
                 await asyncio.sleep(15) # Sleep for some time before checking the queue again. TODO: Once robust, this can be increased to match refresh rate
             
             elif not cleared:
@@ -287,8 +287,8 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                 fleet_resource_manager.release_ship(p)
                 fleet.pop(p)
             
-            if successes > 0: print(f"[INFO] {controller_id} succesfully refreshed {successes} markets.")
-            if failures > 0: print(f"[INFO] {controller_id} is reporting {failures} failures to refresh.")
+            if successes > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} succesfully refreshed {successes} markets.")
+            if failures > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is reporting {failures} failures to refresh.")
 
             await asyncio.sleep(1) # Brief breather for the main loop
 

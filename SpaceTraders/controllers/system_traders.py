@@ -160,14 +160,15 @@ def get_greedy_trades(ship=None):
                         select
                             *
                             ,cast(sellPrice as float) / cast(purchasePrice as float) as ROI
-                            ,round((((cast(sellPrice as float) / cast(purchasePrice as float)) - 1) * 100) / 30) as max_traders
+                            ,ceil((((cast(sellPrice as float) / cast(purchasePrice as float)) - 1) * 100) / 35) as max_traders
                         from TRADE_SYSTEM_MARGINS
                         where 1=1
                             and source_volume >= 6 and sink_volume >= 6
                             and distance < {int(ship_fuel-1)}
-                            and src_supply in ("ABUNDANT", "HIGH", "MODERATE")
+                            and src_supply in ("ABUNDANT", "HIGH", "MODERATE", "LIMITED")
                             and sink_supply in ("SCARCE", "LIMITED", "MODERATE")
                             and symbol not in ("FAB_MATS", "ADVANCED_CIRCUITRY", "QUANTUM_STABILIZERS")
+                            and net_profit >= 500
                             and max_traders > 0
                             order by net_profit desc
                         """
@@ -222,7 +223,7 @@ async def trade_in_system(system : str, max_haulers : int, strategy : str = "gre
 
         # Try to clear all trades
         t_ix = 0 # Start at the beginning of the queue
-        while len(trades) > 0:
+        while len(trades) > 0 and t_ix < len(trades):
 
             # First of all, check if our fleet is at capacity
             if len(fleet) >= max_haulers:
@@ -260,7 +261,7 @@ async def trade_in_system(system : str, max_haulers : int, strategy : str = "gre
                 # Small random delay to allow traders to spread out temporally
                 await asyncio.sleep(random.randint(20, 300) / 1000.0) 
             
-            elif t_ix < len(trades):
+            elif t_ix < len(trades)-1:
                 # This trade is already being served by max haulers, so move down the queue if possible
                 t_ix += 1
                 continue
@@ -283,7 +284,7 @@ async def trade_in_system(system : str, max_haulers : int, strategy : str = "gre
                 for s in fleet:
                     s_profit = get_ship_trade_profit_since(s, time_start)
                     rep += f"\n\t\t     {s} : {s_profit} cr."
-            rep += f"\n\t  Active since {F_utils.unix_to_ts(time_start)}"
+            rep += f"\n\t Active since {F_utils.unix_to_ts(time_start)}"
             print(rep)
  
         # Politely wait until the next iteration

@@ -14,6 +14,9 @@ import math, time
 from datetime import datetime
 import pandas as pd
 
+### GLOBALS ###
+VERBOSITY = 1 # 0 is no output, 1 is only errors & warnings, 2 includes info, 3 is everything
+
 ### GETTERS ###
 
 def __get_ship_nav_old(ship, verbose=True):
@@ -345,10 +348,12 @@ def set_flight_mode(ship, mode):
     io.update_records('ship.NAV', {'symbol': ship, 'flightMode': mode}, ['symbol'])
     return True
 
-def navigate_in_system(ship, waypoint, flightmode='CRUISE', verbose=True):
+def navigate_in_system(ship, waypoint, flightmode='CRUISE', verbose=None):
     """ Sets a ship on course for a waypoint within the same system. Does not dock. 
         Returns status [boolean] - True if succesfully navigating to destination.
     """
+    verbose = verbose or VERBOSITY
+
     # Check ship status before trying to take off
     ship_r = ST.get_request(f'/my/ships/{ship}')
 
@@ -391,7 +396,7 @@ def navigate_in_system(ship, waypoint, flightmode='CRUISE', verbose=True):
     _refresh_ship_nav(ship, nav_r['nav'])
     _refresh_ship_fuel(ship, nav_r['fuel'])
 
-    if verbose:
+    if verbose > 1:
         # Check navigation time
         status = nav_r['nav']
         dept_time = status['route']['departureTime'][:-1] # Removes the 'Z' at the end to parse properly

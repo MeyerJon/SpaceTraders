@@ -245,7 +245,7 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                                                    controller=controller_id, 
                                                    time_delta = refresh_freq)
 
-            if len(market_queue) > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is targeting {len(market_queue)} markets.")
+            if len(market_queue) >= len(fleet): print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is targeting {len(market_queue)} markets.")
     
             # Dispatch ships
             cleared = await dispatch_satellites(system, market_queue, fleet, controller_id, BASE_PRIO_MGR_PROBES)

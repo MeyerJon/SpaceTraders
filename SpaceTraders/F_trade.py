@@ -13,6 +13,9 @@ from SpaceTraders import io, F_utils, F_nav
 import pandas as pd
 import math, datetime, time
 
+### GLOBALS ###
+VERBOSITY = 1 # 0 is no output, 1 is only errors & warnings, 2 includes info, 3 is everything
+
 ### PERSISTENCE ###
 def _log_trade(market_transaction : dict):
     """ Records the given transaction to the database. """
@@ -219,7 +222,7 @@ def sell_goods(ship : str, goods : dict, verbose=True):
 
     return all_sold
 
-def _purchase_cargo(ship, good, units, verbose=True):
+def _purchase_cargo(ship, good, units, verbose=1):
     """ Purchases up to a certain number of a good from the current location. If units > trade volume, units are capped and this transaction must be called again. 
         Return Transaction if successful, False otherwise.
     """
@@ -249,12 +252,12 @@ def _purchase_cargo(ship, good, units, verbose=True):
     t = data['transaction']
     _log_trade(t)
 
-    if verbose:
+    if verbose > 1:
         print(f"[INFO] Ship {ship} bought {t['units']} {t['tradeSymbol']} @ {t['pricePerUnit']} for a total of {t['totalPrice']} credits.")
 
     return t
 
-def purchase_cargo(ship : str, good : str, units : int, verbose=True):
+def purchase_cargo(ship : str, good : str, units : int, verbose=1):
     """ Purchases units of a given good. Does not check budget. 
         Returns success [boolean] 
     """    
@@ -272,7 +275,7 @@ def purchase_cargo(ship : str, good : str, units : int, verbose=True):
                 return True
     return True
 
-def buy_goods(ship : str, goods : dict, verbose = True):
+def buy_goods(ship : str, goods : dict, verbose = 1):
     """ Buys all of the specified goods at the current market. """
     all_bought = True
     for g in goods:
@@ -280,7 +283,7 @@ def buy_goods(ship : str, goods : dict, verbose = True):
             all_bought = False
     return all_bought
 
-def buy_ship(ship : str, shipyard : str, ship_type : str, verbose = True):
+def buy_ship(ship : str, shipyard : str, ship_type : str, verbose = 1):
     """ Purchases a ship at given shipyard using given ship. Fails if no shipyard available. """
     if not F_nav.dock_ship(ship):
         return False
@@ -292,7 +295,7 @@ def buy_ship(ship : str, shipyard : str, ship_type : str, verbose = True):
             print(f"       ", r.json())
         return False
     resp_data = r.json()['data']
-    if verbose:
+    if verbose > 1:
         print(f"[INFO] {ship} bought a new {ship_type} for {resp_data['transaction']['price']} credits (at {shipyard})")
     # TODO: Update the cache with this new ship's info: ship.NAV, ship.REGISTRATION; releasing ship lock should probably be delegated to the controller that's issueing the buy order
     new_ship = resp_data['ship']['symbol']

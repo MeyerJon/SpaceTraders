@@ -13,6 +13,12 @@ from SpaceTraders import io, F_utils, F_nav, F_trade
 import pandas as pd
 import math, datetime, time
 
+
+### PERSISTENCE ###
+def _log_yield(ship, e_yield):
+    """ Persists yield to DB. """
+    io.write_data('YIELDS', {'ship': ship, 'symbol': e_yield['symbol'], 'units': e_yield['units'], 'ts_created': int(time.time())})
+
 ### GETTERS ###
 
 ### SETTERS ###
@@ -39,6 +45,9 @@ def extract(ship : str, goods : list = None):
             # If undesired good was extracted, jettison immediately
             F_trade.jettison_cargo(ship, e_yield['symbol'], e_yield['units'])           
 
+        # Log yield to DB
+        _log_yield(ship, e_yield)
+
         return True
     else:
         return False
@@ -63,6 +72,9 @@ def siphon(ship : str, goods : list = None):
         if goods is not None and e_yield['symbol'] not in goods:
             # If undesired good was extracted, jettison immediately
             F_trade.jettison_cargo(ship, e_yield['symbol'], e_yield['units'])
+
+        # Log yield to DB
+        _log_yield(ship, e_yield)
 
         return True
     else:

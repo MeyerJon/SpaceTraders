@@ -131,7 +131,7 @@ async def buy_from_shipyard(ship, shipyard, target_ship_type):
         return False
 
     # Attempt to buy the ship
-    if not F_trade.buy_ship(ship, shipyard, target_ship_type):
+    if not F_trade.buy_ship(ship, shipyard, target_ship_type, verbose=2):
         print(f"[ERROR] {ship} failed to purchase {target_ship_type} at {shipyard}.")
         return False
 
@@ -325,7 +325,7 @@ async def market_update_loop(ship, path=None, loops=-1):
         time.sleep(interval_seconds)
 
 # Shipyard recon loop
-def scan_shipyards(ship):
+async def scan_shipyards(ship):
      
     # Get a list of shipyards
     cur_sys = F_nav.get_ship_nav(ship)['systemSymbol']
@@ -339,10 +339,13 @@ def scan_shipyards(ship):
 
         # Navigate to new shipyard
         m_wp_id = cur_sy['symbol']
+        """
         F_nav.refuel_ship(ship)
         F_nav.navigate_in_system(ship, m_wp_id)
-        await_navigation(ship)
-        
+        await await_navigation(ship)
+        """
+        await navigate(ship, m_wp_id) 
+
         print(f"[INFO] {ship} arrived at shipyard {m_wp_id} and is waiting to fetch data.")
         time.sleep(6) # Server needs to register that we now have a ship here
 
@@ -397,7 +400,7 @@ async def naive_trader(ship, run_interval = None):
     """ Picks a 'sustainable' trade route and initiates it. Backs off by default to allow for markets to stabilise. """
     CONTROLLER_ID = "NAIVE-TRADER-" + ship
     loops            = 0
-    interval_seconds = run_interval or (60 * 5)
+    interval_seconds = run_interval or (60 * 1)
     selection_query  = \
                         """
                         select

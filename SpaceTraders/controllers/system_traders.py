@@ -152,7 +152,7 @@ def assign_hauler_to_trade(candidates : list, fleet : dict, trade : TaskTrade, c
 def get_greedy_trades(ship=None):
     """ Returns list of trades (tradeSymbol, source, sink, units, max_traders) ordered by their profitability. """
     # max_traders is calculated based on ROI - for every 30%, one extra trader is allowed to run the trade concurrently (since we assume the margin is large enough to guarantee profitability)
-    ship_fuel = 300
+    ship_fuel = 600
     if ship is not None:
         ship_fuel = F_nav.get_fuel_capacity(ship)
     selection_query  = \
@@ -164,7 +164,7 @@ def get_greedy_trades(ship=None):
                         from TRADE_SYSTEM_MARGINS
                         where 1=1
                             and source_volume >= 6 and sink_volume >= 6
-                            and distance < {int(ship_fuel-1)}
+                            and distance < {int((ship_fuel-1) * 1.5)}
                             and src_supply in ("ABUNDANT", "HIGH", "MODERATE", "LIMITED")
                             and sink_supply in ("SCARCE", "LIMITED", "MODERATE")
                             and symbol not in ("FAB_MATS", "ADVANCED_CIRCUITRY", "QUANTUM_STABILIZERS")

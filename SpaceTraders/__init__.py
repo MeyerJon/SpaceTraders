@@ -65,8 +65,8 @@ def _cleaned_endpoint(base, endpoint):
     
 def _request_with_retries(req_f, params):
     """ Makes a given request, and retries if it fails. """
-    max_retries     = 5
-    backoff_seconds = 0.25
+    max_retries     = 10
+    backoff_seconds = 0.3
     resp = None
     for r in range(max_retries):
         try:

@@ -36,6 +36,59 @@ def get_available_mining_drones(system : str, priority : int, controller : str):
     """
     return [r[0] for r in io.read_list(q_miners)]
 
+def get_closest_haulers_to_wp(waypoint : str, priority : int, controller : str):
+    """ Returns list of available haulers sorted by ascending distance to waypoint. """
+    q = f"""
+        select
+            reg.shipSymbol
+            ,reg.role
+            ,nav.waypointSymbol
+            ,dists.dist
+        from 'ship.NAV' nav
+
+        inner join 'control.SHIP_LOCKS' ctrl
+        on ctrl.shipSymbol = reg.shipSymbol
+        and blocked = 0
+
+        inner join 'ship.REGISTRATION' reg
+        on reg.shipSymbol = nav.symbol
+        and reg.role = "HAULER"
+
+        inner join 'WP_DISTANCES' dists
+        on  dists.src = nav.waypointSymbol
+        and dists.dst = "{waypoint}"
+
+        order by dist asc
+    """
+    rows = io.read_dict(q)
+    rows = [r['shipSymbol'] for r in rows]
+    return rows or list()
+
+def get_full_excavators_at_wp(waypoint : str, cargo_pct : float):
+    """ Returns excavators in orbit around given waypoint, who have at least cargo_pct% of their cargo filled. """
+    q = f"""
+           select
+            reg.shipSymbol
+            ,reg.role
+            ,nav.waypointSymbol
+        from 'ship.NAV' nav
+
+        inner join 'ship.REGISTRATION' reg
+        on reg.shipSymbol = nav.symbol
+        and reg.role = "EXCAVATOR"
+
+        inner join 'ship.CARGO' cargo
+        on cargo.shipSymbol = nav.symbol
+        and cargo.totalUnits >= (cargo.capacity * {cargo_pct})
+
+        where nav.waypointSymbol = "{waypoint}" 
+
+        order by cargo.totalUnits desc
+    """
+    rows = io.read_dict(q)
+    rows = [r['shipSymbol'] for r in rows]
+    return rows or list()
+
 def get_yield_since(ships, ts):
     """ Returns total yield of all ships since given timestamp (Unix). """
     q_yield = f"""
@@ -227,4 +280,29 @@ async def extract_in_system(system):
 
 async def haul_yields_in_system(system : str, max_haulers : int):
     """ Periodically checks for excavators with full holds. If any are found, sends available haulers to collect & sell the mined goods. """
-    raise NotImplementedError("Haul controller is still in development.")
+    
+    # Bookkeeping
+    REFRESH_PERIOD = 10
+    fleet = dict()
+    marked_drones = set()
+
+    # Every refresh
+    while True:
+
+        # Check both extraction points
+
+        # Miners
+        wp_miners = io.read_dict("SELECT symbol FROM 'nav.WAYPOINTS' WHERE type = \"ENGINEERED_ASTEROID\"")[0]['symbol']
+
+        # Get all miners in orbit around the engineered asteroid
+        # Filter out those with >60% filled cargo
+        miners = get_full_excavators_at_wp(wp_miners, cargo_pct=0.6)
+
+        # TODO come up with a way to have one hauler service multiple drones in one order
+        # Try to service them
+        # For each candidate miner that's not in marked drones:
+            # Find the closest available hauler
+            # Try to acquire it
+                # If acquired: add drone to marked drones & add hauler to fleet
+
+        await asyncio.sleep(REFRESH_PERIOD)

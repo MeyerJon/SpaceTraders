@@ -4,6 +4,8 @@ from SpaceTraders.controllers import system_traders as TRADERS
 from SpaceTraders import scripts, io
 import asyncio
 
+HOME_SYSTEM = 'X1-GS33'
+
 async def siphoner_squad(haulers, drones, goods=None):
     gas_giant_wp = 'X1-ZZ30-C43'
     haulers = [asyncio.create_task(scripts.haul_ore(h)) for h in haulers]
@@ -12,10 +14,10 @@ async def siphoner_squad(haulers, drones, goods=None):
     await asyncio.gather(*tasks)
 
 async def satellite_squad():
-    await MI.maintain_tradegood_data('X1-SR92', 60*3, mode='no_fuel')
+    await MI.maintain_tradegood_data(HOME_SYSTEM, 60*5, mode='no_exchanges')
 
 async def greedy_squad(n_haulers):
-    await TRADERS.trade_in_system('X1-SR92', n_haulers, "greedy")
+    await TRADERS.trade_in_system(HOME_SYSTEM, n_haulers, "greedy")
 
 async def booster_squad(n_haulers):
     haulers = [asyncio.create_task(scripts.naive_trader(h)) for h in haulers]
@@ -24,7 +26,7 @@ async def booster_squad(n_haulers):
 async def main():
     await asyncio.gather(
         #siphoner_squad(haulers=['RYVIOS-6', 'RYVIOS-D'], drones=['RYVIOS-5', 'RYVIOS-7', 'RYVIOS-9', 'RYVIOS-E'], goods=["LIQUID_NITROGEN", "LIQUID_HYDROGEN"]),
-        greedy_squad(n_haulers=4),
+        greedy_squad(n_haulers=10),
         satellite_squad()
     )
 

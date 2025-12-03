@@ -6,11 +6,10 @@ import asyncio
 
 HOME_SYSTEM = 'X1-GS33'
 
-async def siphoner_squad(haulers, drones, goods=None):
-    gas_giant_wp = 'X1-ZZ30-C43'
-    haulers = [asyncio.create_task(scripts.haul_ore(h)) for h in haulers]
-    drones = [asyncio.create_task(MINERS.mine_goods(d, gas_giant_wp, goods=goods)) for d in drones]
-    tasks = haulers + drones
+async def excavator_squad(n_haulers):
+    #haulers = asyncio.create_task(scripts.haul_ore(h)) for h in haulers
+    drones = asyncio.create_task(MINERS.extract_in_system(HOME_SYSTEM))
+    tasks = [drones]
     await asyncio.gather(*tasks)
 
 async def satellite_squad():
@@ -26,7 +25,8 @@ async def booster_squad(n_haulers):
 async def main():
     await asyncio.gather(
         #siphoner_squad(haulers=['RYVIOS-6', 'RYVIOS-D'], drones=['RYVIOS-5', 'RYVIOS-7', 'RYVIOS-9', 'RYVIOS-E'], goods=["LIQUID_NITROGEN", "LIQUID_HYDROGEN"]),
-        greedy_squad(n_haulers=10),
+        excavator_squad(0),
+        greedy_squad(n_haulers=6),
         satellite_squad()
     )
 

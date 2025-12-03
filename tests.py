@@ -1,6 +1,7 @@
 import asyncio
-from SpaceTraders import F_trade, scripts
+from SpaceTraders import F_trade, scripts, fleet_resource_manager
 from SpaceTraders.controllers import system_traders as TRADERS
+from SpaceTraders.controllers import system_miners as MINERS
 
 async def do_something():
     print("Starting some work.")
@@ -21,9 +22,17 @@ async def canceltest():
 
 async def main():
 
-    await TRADERS.trade_in_system('X1-SR92', 4)
+    await MINERS.haul_yields_in_system('X1-GS33', max_haulers=3)
     
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print("Unhandled exception:")
+        raise e
+    except KeyboardInterrupt as e:
+        print("Exiting.")
+    finally:
+        fleet_resource_manager.release_fleet('EXTRACTION-CONTROLLER-HAULERS-X1-GS33', force=True)

@@ -113,6 +113,8 @@ def _log_trade(ship : str, trade : TaskTrade, ts_start : int, ts_end : int):
 async def execute_trade(ship : str, trade : TaskTrade):
     """ Task implementation: Handles the trade end-to-end, including recovery & persistence. """
 
+    fleet_resource_manager.set_ship_blocked_status(ship, blocked=True)
+
     # Sanity check - ensure that the ship isn't in transit
     await scripts.await_navigation(ship)
 
@@ -128,6 +130,8 @@ async def execute_trade(ship : str, trade : TaskTrade):
     success = await scripts.execute_trade(ship, trade.source, trade.sink, {trade.tradeSymbol: trade.units})
     ts_end = int(time.time())
     _log_trade(ship, trade, ts_start, ts_end)
+
+    fleet_resource_manager.set_ship_blocked_status(ship, blocked=False)
 
     return success
 

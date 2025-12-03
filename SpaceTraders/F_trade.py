@@ -19,7 +19,7 @@ VERBOSITY = 1 # 0 is no output, 1 is only errors & warnings, 2 includes info, 3 
 ### PERSISTENCE ###
 def _log_trade(market_transaction : dict):
     """ Records the given transaction to the database. """
-    return io.write_data('TRANSACTIONS', market_transaction)
+    return io.write_data('TRANSACTIONS', {**market_transaction, 'ts_created': int(time.time())})
 
 ### GETTERS ###
 def get_ship_cargo(ship):

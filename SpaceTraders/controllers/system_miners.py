@@ -7,11 +7,16 @@ import asyncio, random, time
 from SpaceTraders import io, fleet_resource_manager, scripts, F_utils, F_nav, F_extract, F_trade
 
 ### GLOBALS ###
-BASE_PRIO_EXTRACTOR = 100
-BASE_CONTROLLER_ID  = "EXTRACTION-CONTROLLER"
+BASE_PRIO_EXTRACTORS = 100
+BASE_PRIO_HAULERS    = 350 
+BASE_CONTROLLER_ID   = "EXTRACTION-CONTROLLER"
 
 
 ### GETTERS ###
+def get_finished_ships(fleet):
+    """ Returns a list of ship names that have finished their tasks. """
+    return [s for s in fleet.keys() if fleet[s].get('task', None) is not None and fleet[s]['task'].done()]
+
 def get_available_siphon_drones(system : str, priority : int, controller : str):
     available = fleet_resource_manager.get_available_ships_in_systems([system], 'EXCAVATOR', prio=priority, controller=controller)
     q_siphoners = f"""
@@ -37,7 +42,7 @@ def get_available_mining_drones(system : str, priority : int, controller : str):
     return [r[0] for r in io.read_list(q_miners)]
 
 def get_closest_haulers_to_wp(waypoint : str, priority : int, controller : str):
-    """ Returns list of available haulers sorted by ascending distance to waypoint. """
+    """ Returns list of haulers sorted by ascending distance to waypoint. Includes haulers who are currently busy. """
     q = f"""
         select
             reg.shipSymbol
@@ -48,7 +53,6 @@ def get_closest_haulers_to_wp(waypoint : str, priority : int, controller : str):
 
         inner join 'control.SHIP_LOCKS' ctrl
         on ctrl.shipSymbol = reg.shipSymbol
-        and blocked = 0
 
         inner join 'ship.REGISTRATION' reg
         on reg.shipSymbol = nav.symbol
@@ -97,7 +101,7 @@ def get_yield_since(ships, ts):
         from YIELDS
         where ship in ({', '.join([f'"{s}"' for s in ships])})
     """
-    yields = io.read_dict(q_yield)
+    yields = io.read_dict(q_yield) or 0
     if len(yields) > 0:
         yields = yields[0]['total']
     else:
@@ -112,10 +116,7 @@ async def siphon_goods(ship: str, waypoint : str, goods : list = None):
     refresh_period = 10 # Time between checks if ship gets locked (full cargo)
 
     # Navigate to waypoint if not there
-    if F_nav.get_ship_waypoint(ship) != waypoint:
-        if not await scripts.navigate(ship, waypoint):
-            return False
-        await scripts.await_navigation(ship)
+    await scripts.navigate(ship, waypoint)
 
     # Orbit location
     F_nav.orbit_ship(ship)
@@ -154,10 +155,7 @@ async def extract_goods(ship: str, waypoint : str, goods : list = None):
     refresh_period = 10 # Time between checks if ship gets locked (full cargo)
 
     # Navigate to waypoint if not there
-    if F_nav.get_ship_waypoint(ship) != waypoint:
-        if not await scripts.navigate(ship, waypoint):
-            return False
-        await scripts.await_navigation(ship)
+    await scripts.navigate(ship, waypoint)
 
     # Orbit location
     F_nav.orbit_ship(ship)
@@ -187,8 +185,75 @@ async def extract_goods(ship: str, waypoint : str, goods : list = None):
         else:
         # Extraction failed for some reason; idle for a while and then try again
             cd = max(F_utils.get_ship_cooldown(ship)['remainingSeconds'], refresh_period)
-            #print(f'[WARNING] Ship {ship} failed to siphon. Retrying in {cd} seconds.')
             await asyncio.sleep(cd)
+
+async def haul_yields(ship : str, drones : list):
+    """ Orders a ship to go pick up the cargo held by target drones, and sell it to nearby markets. """
+    # TODO properly implement this 
+    fleet_resource_manager.set_ship_blocked_status(ship, blocked=True)
+
+    # Await navigation if in-transit when receiving order
+    await scripts.await_navigation(ship)
+
+    # Collect yields from target drones
+    
+    for d in drones:
+        # Navigate to drone
+        await scripts.navigate(ship, F_nav.get_ship_waypoint(d))
+
+        # Drain its cargo
+        if not await scripts.drain_cargo_from_ship(ship, d):
+            print(f"[ERROR] {ship} was unable to drain cargo from {d}.")
+
+    print(f"[INFO] {ship} picked up designated yields.")
+
+    # Go sell off the collected haul
+    if not await scripts.clear_cargo(ship):
+        print(f"[ERROR] {ship} was unable to sell off its collected haul.")
+    fleet_resource_manager.set_ship_blocked_status(ship, blocked=False)
+
+def dispatch_haulers(candidates : list, targets : list, fleet : dict, priority : int, controller : str):
+    """ Attempts to cover all targets (drones) by dispatching candidate haulers to fetch & sell their yields. """
+    # Approach: pick up candidate haulers starting with the first in the list
+    # If one is acquired, check how much cargo it can support & have it target as many drones as it can
+    h_ix = 0
+    while len(targets) > 0 and h_ix < len(candidates):
+        h = candidates[h_ix]
+        hauler_acquired = fleet_resource_manager.request_ship(h, controller, priority)
+
+        # Early break: this hauler isn't available, but there are other candidates. Move on to the next.
+        if not hauler_acquired:
+            h_ix += 1
+            continue
+
+        # TODO maybe make haulers smarter about pre-existing cargo (selling off goods that are on the whitelist before moving on with the order?)
+        # Check hauler's cargo capacity  
+        h_cargo = F_trade.get_ship_cargo(h)
+        capacity = h_cargo['capacity'] - h_cargo['units']
+
+        # Round up targets until the capacity is reached
+        h_targets   = list()
+        total_yield = 0 
+        for ix, d in enumerate(targets):
+            yield_units = F_trade.get_ship_cargo(d)['units']
+            if total_yield + yield_units <= capacity:
+                h_targets.append(d)
+                total_yield += yield_units
+
+        # Actually dispatch the hauler
+        print(f"[INFO] {h} en-route to pick up {total_yield} units of mined goods from {h_targets}.")
+        fleet[h] = {
+            'targets': h_targets,
+            'task': asyncio.create_task(haul_yields(h, h_targets)),
+            'ts_start': int(time.time())
+        }
+
+        # Bookkeeping
+        targets = list(set(targets) - set(h_targets))
+        h_ix += 1
+    
+    # At the end, if no more target drones remain unserviced, the dispatching was successful
+    return len(targets) == 0
 
 
 
@@ -202,10 +267,11 @@ async def extract_in_system(system):
     MAX_MINERS     = 8
     MAX_SIPHONERS  = 10 
     REFRESH_PERIOD = 15  # How often the controller updates its fleet
+    STATUS_REPORT_PERIOD = 60 * 10 
 
     # Bookkeeping
     controller = BASE_CONTROLLER_ID + '-EXCAVATORS-' + system
-    priority = BASE_PRIO_EXTRACTOR
+    priority = BASE_PRIO_EXTRACTORS
     fleet_miners    = dict()
     fleet_siphoners = dict()
     ts_start = int(time.time())
@@ -228,7 +294,6 @@ async def extract_in_system(system):
                 miner = candidates[i]
                 if fleet_resource_manager.request_ship(miner, controller, priority):
                     # Lock ship since to indicate that the ship is busy
-                    fleet_resource_manager.lock_ship(miner, controller, priority)
                     fleet_miners[miner] = {
                         "waypoint": wp_miners,
                         "task": asyncio.create_task(extract_goods(miner, wp_miners, goods)),
@@ -241,7 +306,6 @@ async def extract_in_system(system):
             for i in range(to_acquire):
                 siphoner = candidates[i]
                 if fleet_resource_manager.request_ship(siphoner, controller, priority):
-                    fleet_resource_manager.lock_ship(siphoner, controller, priority)
                     fleet_siphoners[siphoner] = {
                         "waypoint": wp_siphon,
                         "task": asyncio.create_task(siphon_goods(siphoner, wp_siphon, goods)),
@@ -259,7 +323,7 @@ async def extract_in_system(system):
                 fleet_resource_manager.release_ship(s)
                 del fleet_siphoners[s]
 
-        if (int(time.time()) - ts_start) % 60:
+        if (int(time.time()) - ts_start) % STATUS_REPORT_PERIOD:
             # Avg yield since start
             all_ships = list(fleet_miners.keys()) + list(fleet_siphoners.keys())
             cur_yield = get_yield_since(all_ships, ts_start)
@@ -281,28 +345,64 @@ async def extract_in_system(system):
 async def haul_yields_in_system(system : str, max_haulers : int):
     """ Periodically checks for excavators with full holds. If any are found, sends available haulers to collect & sell the mined goods. """
     
-    # Bookkeeping
+    controller = BASE_CONTROLLER_ID + '-HAULERS-' + system
+    priority = BASE_PRIO_HAULERS
     REFRESH_PERIOD = 10
+
+    # TODO account for max haulers!
+
+    # Bookkeeping
+    ts_start = int(time.time())
     fleet = dict()
     marked_drones = set()
+    wp_miners = io.read_dict("SELECT symbol FROM 'nav.WAYPOINTS' WHERE type = \"ENGINEERED_ASTEROID\"")[0]['symbol']
+    wp_siphon = io.read_dict("SELECT symbol FROM 'nav.WAYPOINTS' WHERE type = \"GAS_GIANT\"")[0]['symbol']
 
     # Every refresh
     while True:
 
-        # Check both extraction points
+        # TODO add better CLI logging for this controller
+        # Check fleet & release finished haulers
+        for s in get_finished_ships(fleet):
+            print(f"[INFO] {s} finished delivering mined goods.")
+            fleet_resource_manager.release_ship(s)
+            del fleet[s]
 
-        # Miners
-        wp_miners = io.read_dict("SELECT symbol FROM 'nav.WAYPOINTS' WHERE type = \"ENGINEERED_ASTEROID\"")[0]['symbol']
+        if len(fleet) >= max_haulers:
+            print(f"[INFO] {controller} is at fleet capacity ({len(fleet)} drones). Standing by.")
+            await asyncio.sleep(REFRESH_PERIOD)
+            continue
 
-        # Get all miners in orbit around the engineered asteroid
-        # Filter out those with >60% filled cargo
-        miners = get_full_excavators_at_wp(wp_miners, cargo_pct=0.6)
+        # Check both extraction points      
 
-        # TODO come up with a way to have one hauler service multiple drones in one order
+        # Get all miners in orbit around the engineered asteroid with at least 60% cargo
+        miners = get_full_excavators_at_wp(wp_miners, cargo_pct=0.85)
+        miners = set(miners) - marked_drones
+
+        # Get candidate haulers sorted by distance
+        candidates = get_closest_haulers_to_wp(wp_miners, priority, controller)
+        max_candidates = min(max_haulers - len(fleet), len(candidates))
+        candidates = candidates[:max_candidates]
+
         # Try to service them
-        # For each candidate miner that's not in marked drones:
-            # Find the closest available hauler
-            # Try to acquire it
-                # If acquired: add drone to marked drones & add hauler to fleet
+        miners_serviced = dispatch_haulers(candidates, miners, fleet, priority, controller)
+
+        # Do the same thing for the siphon drones
+        siphoners = get_full_excavators_at_wp(wp_siphon, cargo_pct=0.85)
+        siphoners = set(siphoners) - marked_drones
+        candidates = get_closest_haulers_to_wp(wp_siphon, priority, controller)
+        max_candidates = min(max_haulers - len(fleet), len(candidates))
+        candidates = candidates[:max_candidates]
+        siphoners_serviced = dispatch_haulers(candidates, siphoners, fleet, priority, controller)
+
+        # Update which miners are being serviced based on the fleet's targets
+        marked_drones = list()
+        for s in fleet:
+            marked_drones.extend(fleet[s]['targets'])
+        marked_drones = set(marked_drones)
+
+        # Report status
+        if not (miners_serviced and siphoners_serviced):
+            print(f"[INFO] {controller} was unable to target all waiting drones. Currently employing {len(fleet)} haulers to service {len(marked_drones)} drones.")
 
         await asyncio.sleep(REFRESH_PERIOD)

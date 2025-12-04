@@ -245,7 +245,7 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                                                    controller=controller_id, 
                                                    time_delta = refresh_freq)
 
-            if len(market_queue) >= len(fleet): print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is targeting {len(market_queue)} markets.")
+            #if len(market_queue) >= len(fleet): print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is targeting {len(market_queue)} markets.")
     
             # Dispatch ships
             cleared = await dispatch_satellites(system, market_queue, fleet, controller_id, BASE_PRIO_MGR_PROBES)
@@ -287,7 +287,7 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                 fleet_resource_manager.release_ship(p)
                 fleet.pop(p)
             
-            if successes > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} succesfully refreshed {successes} markets.")
+            #if successes > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} succesfully refreshed {successes} markets.")
             if failures > 0: print(f"[INFO] [{time.strftime('%H:%M:%S')}] {controller_id} is reporting {failures} failures to refresh.")
 
             await asyncio.sleep(1) # Brief breather for the main loop

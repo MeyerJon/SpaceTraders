@@ -259,7 +259,7 @@ async def maintain_tradegood_data(system : str, refresh_freq : int = -1, mode : 
                 fleet_tasks = [s["task"] for s in fleet.values() if s.get("task", None) is not None]
                 if len(fleet_tasks) > 0:
                 # If not cleared but a fleet is working, wait for the first ship to finish its task
-                    print(f"[INFO] {controller_id} was unable to clear its queue. Waiting for {len(fleet_tasks)} ships to report back for reassignment.")
+                    #print(f"[INFO] {controller_id} was unable to clear its queue. Waiting for {len(fleet_tasks)} ships to report back for reassignment.")
                     done, ongoing = await asyncio.wait(fleet_tasks, return_when=asyncio.FIRST_COMPLETED)
                 else:
                 # If not cleared and no ships were available, wait an arbitrary time before retrying

@@ -108,8 +108,62 @@ def get_yield_since(ships, ts):
         yields = 0
     return yields
 
+def get_ship_trade_profit_since(ship : str, ts_start : int, ts_end : int = None):
+    """ Returns the total profit a ship has made selling hauls in the given time window. Timestamps are in unix format and do not account for server-client time offset. Fix your timestamps before calling this. """
+    query = f"""
+        select
+            sum(totalPrice)
+        from TRANSACTIONS t
+
+        inner join 'control.EXCAVATOR_GOODS' wl
+        on wl.symbol = t.tradeSymbol
+    
+        where shipSymbol = "{ship}"
+        and ts_created >= {ts_start}
+        and type = "SELL"
+    """
+    if ts_end: query += f"\nand ts_end <= {ts_end}"
+    try:
+        result = io.read_list(query)
+        if result and result[0][0] is not None:
+            return result[0][0]
+        else:
+            return 0
+    except Exception as e:
+        print(f"[ERROR] Unhandled exception while calculating total hauling profit for {ship} since {ts_start}.")
+        io.log_exception(e)
+        return 0
+
+def get_ship_traded_units_since(ship : str, ts_start : int, ts_end : int = None):
+    query = f"""
+        select
+            sum(units)
+        from TRANSACTIONS t
+
+        inner join 'control.EXCAVATOR_GOODS' wl
+        on wl.symbol = t.tradeSymbol
+    
+        where shipSymbol = "{ship}"
+        and ts_created >= {ts_start}
+        and type = "SELL"
+    """
+    if ts_end: query += f"\nand ts_end <= {ts_end}"
+    try:
+        result = io.read_list(query)
+        if result and result[0][0] is not None:
+            return result[0][0]
+        else:
+            return 0
+    except Exception as e:
+        print(f"[ERROR] Unhandled exception while calculating total units sold for {ship} since {ts_start}.")
+        io.log_exception(e)
+        return 0
 
 ### HELPERS ###
+def _log_sale(ship : str, profit : int, units : int, ts_start : int, ts_end : int, controller : str = None):
+    """ Records a yield sale in the DB. """
+    return io.write_data('YIELD_SALES', {"ship": ship, "controller": controller, "units": units, "profit": profit, "ts_start": ts_start, "ts_end": ts_end})
+
 async def siphon_goods(ship: str, waypoint : str, goods : list = None):
     """ Siphon from a waypoint until cargo hold is filled, keeping only the desired goods.
     """
@@ -187,7 +241,7 @@ async def extract_goods(ship: str, waypoint : str, goods : list = None):
             cd = max(F_utils.get_ship_cooldown(ship)['remainingSeconds'], refresh_period)
             await asyncio.sleep(cd)
 
-async def haul_yields(ship : str, drones : list):
+async def haul_yields(ship : str, drones : list, controller : str = None):
     """ Orders a ship to go pick up the cargo held by target drones, and sell it to nearby markets. """
     # TODO properly implement this 
     fleet_resource_manager.set_ship_blocked_status(ship, blocked=True)
@@ -196,7 +250,7 @@ async def haul_yields(ship : str, drones : list):
     await scripts.await_navigation(ship)
 
     # Collect yields from target drones
-    
+    ts_start = int(time.time())
     for d in drones:
         # Navigate to drone
         await scripts.navigate(ship, F_nav.get_ship_waypoint(d))
@@ -212,8 +266,15 @@ async def haul_yields(ship : str, drones : list):
         print(f"[ERROR] {ship} was unable to sell off its collected haul.")
     fleet_resource_manager.set_ship_blocked_status(ship, blocked=False)
 
+    # Report
+    profit = get_ship_trade_profit_since(ship, ts_start)
+    units  = get_ship_traded_units_since(ship, ts_start)
+    _log_sale(ship, profit, units, ts_start, int(time.time()), controller)
+    print(f"[INFO] [{controller}] {ship} sold {units} extracted goods for {profit} credits.")
+
 def dispatch_haulers(candidates : list, targets : list, fleet : dict, priority : int, controller : str):
     """ Attempts to cover all targets (drones) by dispatching candidate haulers to fetch & sell their yields. """
+    MIN_HAUL_RATIO = 0.75 # Minimum % of hauler capacity that must be picked up before an order is actually given
     # Approach: pick up candidate haulers starting with the first in the list
     # If one is acquired, check how much cargo it can support & have it target as many drones as it can
     h_ix = 0
@@ -240,11 +301,18 @@ def dispatch_haulers(candidates : list, targets : list, fleet : dict, priority :
                 h_targets.append(d)
                 total_yield += yield_units
 
+        # Optimization: the trip is only worth it if the hauler can sell enough goods.
+        if total_yield < (capacity * MIN_HAUL_RATIO):
+            # Remaining drones aren't sufficiently filled for this hauler. Release the hauler immediately and try the next one (which may have a smaller hold)
+            fleet_resource_manager.release_ship(h)
+            h_ix += 1
+            continue
+
         # Actually dispatch the hauler
-        print(f"[INFO] {h} en-route to pick up {total_yield} units of mined goods from {h_targets}.")
+        print(f"[INFO] [{time.strftime('%H:%M:%S')}] {h} en-route to pick up {total_yield} units of mined goods from {h_targets}.")
         fleet[h] = {
             'targets': h_targets,
-            'task': asyncio.create_task(haul_yields(h, h_targets)),
+            'task': asyncio.create_task(haul_yields(h, h_targets, controller)),
             'ts_start': int(time.time())
         }
 
@@ -275,6 +343,7 @@ async def extract_in_system(system):
     fleet_miners    = dict()
     fleet_siphoners = dict()
     ts_start = int(time.time())
+    ts_last_report = time.time()
 
     # Extraction sites are static per system, so only need to be looked up on startup
     wp_miners = io.read_dict("SELECT symbol FROM 'nav.WAYPOINTS' WHERE type = \"ENGINEERED_ASTEROID\"")[0]['symbol']
@@ -323,7 +392,7 @@ async def extract_in_system(system):
                 fleet_resource_manager.release_ship(s)
                 del fleet_siphoners[s]
 
-        if (int(time.time()) - ts_start) % STATUS_REPORT_PERIOD:
+        if (time.time() - ts_last_report) >= STATUS_REPORT_PERIOD:
             # Avg yield since start
             all_ships = list(fleet_miners.keys()) + list(fleet_siphoners.keys())
             cur_yield = get_yield_since(all_ships, ts_start)
@@ -338,6 +407,7 @@ async def extract_in_system(system):
             rep += f"\t  [INFO] Projected units/hr  : {avg_yield_per_hour:.1f} u/hr.\n"
             rep += f"  Active since {F_utils.unix_to_ts(ts_start)}."
             print(rep)
+            ts_last_report = time.time()
 
         await asyncio.sleep(REFRESH_PERIOD)
 
@@ -347,7 +417,7 @@ async def haul_yields_in_system(system : str, max_haulers : int):
     
     controller = BASE_CONTROLLER_ID + '-HAULERS-' + system
     priority = BASE_PRIO_HAULERS
-    REFRESH_PERIOD = 10
+    REFRESH_PERIOD = 9
 
     # TODO account for max haulers!
 
@@ -364,7 +434,7 @@ async def haul_yields_in_system(system : str, max_haulers : int):
         # TODO add better CLI logging for this controller
         # Check fleet & release finished haulers
         for s in get_finished_ships(fleet):
-            print(f"[INFO] {s} finished delivering mined goods.")
+            print(f"[INFO] [{time.strftime('%H:%M:%S')}] {s} finished delivering mined goods.")
             fleet_resource_manager.release_ship(s)
             del fleet[s]
 
@@ -400,9 +470,5 @@ async def haul_yields_in_system(system : str, max_haulers : int):
         for s in fleet:
             marked_drones.extend(fleet[s]['targets'])
         marked_drones = set(marked_drones)
-
-        # Report status
-        if not (miners_serviced and siphoners_serviced):
-            print(f"[INFO] {controller} was unable to target all waiting drones. Currently employing {len(fleet)} haulers to service {len(marked_drones)} drones.")
 
         await asyncio.sleep(REFRESH_PERIOD)

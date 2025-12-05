@@ -99,7 +99,7 @@ def lock_ship(ship : str, controller : str, priority : int):
 ### REQUEST QUEUE MANAGEMENT ###
 def get_request_timeout() -> int:
     """ Returns how long a request remains valid (in seconds). """
-    return 35
+    return 40
 
 def enqueue_request(ship: str, controller : str, priority : int):
     """ Registers a controller's request for the given ship. Requests remain valid for a short period, and will guarantee assignment if the requester is at the front of the queue at the time of the request. """
